@@ -4,41 +4,56 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
+var hexMap = make(map[string]int)
+var corpus string = "0123456789abcdef"
+
 func main() {
+	// Zip hex map
+	for i, c := range corpus {
+		hexMap[string(c)] = i
+	}
+
 	scanner := bufio.NewScanner(os.Stdin)
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		before, after, found := strings.Cut(line, ": #")
+		re := regexp.MustCompile(`#[0-9a-fA-F]+`)
+		colorValue := re.FindString(line)
 
-		if found {
-			var nums []string
-
-			step := 0
-			if (len(after)-1)%8 == 0 || (len(after)-1)%6 == 0 {
-				step = 1
-			}
-			for i := 0; i < len(after)-1; i++ {
-				sum := charToN(string(after[i]))*16 +
-					charToN(string(after[i+step]))
-				nums = append(nums, strconv.Itoa(sum))
-				i += step
-			}
-
-			if (len(after)-1)%4 == 0 {
-				num1, _ := strconv.Atoi(nums[2])
-				num2, _ := strconv.Atoi(nums[3])
-				fmt.Printf("%s: rgba(%s / %.5f);\n", before, strings.Join(nums[0:3], " "), float64(num2)/float64(num1))
+		if colorValue != "" {
+			colorValue = strings.ToLower(colorValue[1:]) // Drop #
+			var decimals []string
+			hx := ""
+			// normalize shorthand hex value i.e. fff or ffff
+			if len(colorValue) <= 4 {
+				for _, ch := range colorValue {
+					hx += strings.Repeat(string(ch), 2)
+				}
 			} else {
-				fmt.Printf("%s: rgb(%s);\n", before, strings.Join(nums, " "))
+				hx = colorValue
 			}
 
-		} else {
-			fmt.Println(line)
+			for i := 0; i < len(hx); i += 2 {
+				sum := hexByteToDecimal(hx[i : i+2])
+				decimals = append(decimals, strconv.Itoa(sum))
+			}
+
+			decimalRepresentation := ""
+			if len(colorValue)%4 == 0 {
+				num2, _ := strconv.Atoi(decimals[3])
+				decimalRepresentation = fmt.Sprintf("rgba(%s / %.5f)", strings.Join(decimals[0:3], " "), float64(num2)/float64(255))
+			} else {
+				decimalRepresentation = fmt.Sprintf("rgb(%s)", strings.Join(decimals, " "))
+			}
+			line = re.ReplaceAllString(line, decimalRepresentation)
 		}
+
+		fmt.Println(line)
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -46,20 +61,6 @@ func main() {
 	}
 }
 
-func charToN(ch string) int {
-	if i, err := strconv.Atoi(ch); err == nil {
-		return i
-	}
-
-	ch = strings.ToLower(ch)
-	hexMap := map[string]int{
-		"a": 10,
-		"b": 11,
-		"c": 12,
-		"d": 13,
-		"e": 14,
-		"f": 15,
-	}
-
-	return hexMap[ch]
+func hexByteToDecimal(hexByte string) int {
+	return hexMap[string(hexByte[0])]<<4 + hexMap[(string(hexByte[1]))]
 }
