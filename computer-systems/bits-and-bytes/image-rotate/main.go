@@ -11,7 +11,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	w, h, o := le(data[10:14]), le(data[18:22]), le(data[22:26])
+	w, h, o := le(data[18:22]), le(data[22:26]), le(data[10:14])
 	fmt.Printf("Byte Offset: %d\nWidth: %d x Height %d\n", w, h, o)
 	rotateRight(data)
 
@@ -24,18 +24,18 @@ func rotateRight(data []byte) {
 	}
 	defer f.Close()
 
-	width, height, offset := le(data[10:14]), le(data[18:22]), le(data[10:14])
-	sourcePixels := data[offset:]
+	width, height, offset := le(data[18:22]), le(data[22:26]), le(data[10:14])
 	f.Write(data[:offset])
 
-	for sw := 3; sw <= width*3*3+20; sw += 3 {
-		for sh := 3; sh <= height*3; sh += 3 {
-			location := (sh * height) - (sw)
-			fmt.Println(location)
-			f.Write(sourcePixels[location : location+3])
+	for x := width - 1; x >= 0; x-- {
+		for y := 0; y < height; y++ {
+			location := offset + (x * 3) + (y * width * 3)
+			f.Write(data[location : location+3])
 		}
 	}
+
 	os.Open("right.bmp")
+
 }
 
 func blackFile(data []byte) {
