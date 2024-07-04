@@ -18,6 +18,11 @@ func main() {
 }
 
 func rotateRight(data []byte) {
+	// Rectangle logic
+	//
+	// flip x and y header values
+	//
+	// figure out rotation logic
 	f, err := os.Create("right.bmp")
 	if err != nil {
 		panic(err)
