@@ -9,6 +9,18 @@ import (
 )
 
 func main() {
+	// fmt.Printf("%08b\n",
+	// 	binary.BigEndian.Uint64([]byte("hello")))
+
+	var encoded uint64
+	for _, char := range "hello" {
+		encoded = encoded << 8
+		fmt.Printf("%08b ", encoded)
+		encoded = encoded | uint64(char)
+		fmt.Printf("% x char %08b\n", encoded, uint64(char))
+	}
+	fmt.Printf("% x\n", encoded|0x7FF0000000000000)
+
 	s := "Hello!"
 	fmt.Printf("%s\n", s)
 	concealed := conceal(s)
@@ -33,7 +45,7 @@ func conceal(s string) float64 {
 		log.Fatal("String cannot be more than 6 characters")
 	}
 	bytesSlice := []byte(s)
-
+	// binary.BigEndian.Uint64(bytesSlice)
 	for len(bytesSlice) < 6 {
 		bytesSlice = append(bytesSlice, 0x00)
 	}
