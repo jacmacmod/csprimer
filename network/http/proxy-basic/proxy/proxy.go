@@ -2,43 +2,46 @@ package main
 
 import (
 	"fmt"
-	"io"
-	"log"
-	"net/http"
+	"syscall"
 )
 
 func main() {
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		uri := fmt.Sprintf("http://localhost:9000%s", r.URL.Path)
-		r, err := http.NewRequest("GET", uri, nil)
-		if err != nil {
-			log.Fatal(err)
-		}
+	proxyfd, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	defer syscall.Close(proxyfd)
+	syscall.SetsockoptInt(proxyfd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
 
-		resp, err := http.DefaultClient.Do(r)
-		if err != nil {
-			log.Fatalf("Error in request %v\n", err)
-		}
-		defer resp.Body.Close()
+	proxyAddr := syscall.SockaddrInet4{Port: 8001, Addr: [4]byte{0, 0, 0, 0}}
+	syscall.Bind(proxyfd, &proxyAddr)
+	syscall.Listen(proxyfd, 10)
+	fmt.Printf("Accepting connections on port %d\n", proxyAddr.Port)
 
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			log.Fatal(err)
-		}
+	for {
+		client, clientAddr, _ := syscall.Accept(proxyfd)
+		sa, _ := clientAddr.(*syscall.SockaddrInet4)
+		fmt.Printf("New Connection from %v\n", sa.Port)
 
-		w.WriteHeader(200)
-		w.Write(body)
+		buf := make([]byte, 1500)
+		n, _, _ := syscall.Recvfrom(client, buf, 0)
+		fmt.Printf("--> *     %dB\n", n)
+
+		upstream, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+		upstreamAddr := syscall.SockaddrInet4{Port: 9000, Addr: [4]byte{127, 0, 0, 1}}
+		syscall.Connect(upstream, &upstreamAddr)
+		fmt.Printf("Connected to %v\n", upstreamAddr.Port)
+		syscall.Sendto(upstream, buf[:n], 0, nil)
+		fmt.Printf("    * --> %dB\n", n)
+
+		for {
+			res := make([]byte, 1500)
+			n, _, _ = syscall.Recvfrom(upstream, res, 0)
+			if n == 0 {
+				break
+			}
+			fmt.Printf("    * <-- %dB\n", n)
+			syscall.Sendto(client, res[:n], 0, nil)
+			fmt.Printf("<-- *     %dB\n", n)
+		}
+		syscall.Close(upstream)
+		syscall.Close(client)
 	}
-
-	http.HandleFunc("/", handler)
-	fmt.Println("Listening on port 8080")
-	log.Fatal(http.ListenAndServe(":8080", nil))
 }
-
-// fmt.Printf("body: %s\n, headers,", body)
-// for key, values := range resp.Header {
-// 	for _, value := range values {
-// 		fmt.Printf("key %s value %s\n", key, value)
-// 		w.Header().Add(key, value)
-// 	}
-// }

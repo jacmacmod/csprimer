@@ -24,7 +24,7 @@ func main() {
 	if err = syscall.Listen(fd, 10); err != nil {
 		log.Fatal(err)
 	}
-
+	// select epoll block across any of these connections
 	defer syscall.Close(fd)
 	fmt.Printf("Listening for connections on port %d\n", port)
 

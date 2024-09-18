@@ -7,11 +7,16 @@ import (
 )
 
 func main() {
-	// todo create server that forwards messages
 	fs := http.FileServer(http.Dir("./static"))
 	http.Handle("/", fs)
 
 	port := ":9000"
+
+	s := &http.Server{
+		Addr: port,
+	}
+	s.SetKeepAlivesEnabled(false)
 	fmt.Printf("Serving at port %s\n", port)
-	log.Fatal(http.ListenAndServe(port, nil))
+
+	log.Fatal(s.ListenAndServe())
 }
