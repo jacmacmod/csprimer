@@ -3,10 +3,10 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"fmt"
-	"log"
 	"slices"
+	"strconv"
+	"strings"
 	"syscall"
 )
 
@@ -28,12 +28,18 @@ type HTTPRequest struct {
 	Version  string
 	Body     []byte
 }
+type HTTPError string
+
+const (
+	HTTPError400 HTTPError = "400 HTTP/1.1 Bad Request\r\n\r\n"
+	HTTPError502 HTTPError = "502 HTTP/1.1 Bad Gateway\r\n\r\n"
+	HTTPError505 HTTPError = "505 HTTP/1.1 HTTP Version Not Supported\r\n\r\n"
+)
 
 func main() {
 	proxyfd, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
-	defer syscall.Close(proxyfd)
 	syscall.SetsockoptInt(proxyfd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
-	proxyAddr := syscall.SockaddrInet4{Port: 8001, Addr: [4]byte{0, 0, 0, 0}}
+	proxyAddr := syscall.SockaddrInet4{Port: 8010, Addr: [4]byte{0, 0, 0, 0}}
 	syscall.Bind(proxyfd, &proxyAddr)
 	syscall.Listen(proxyfd, 10)
 	fmt.Printf("Accepting new connections on port %d\n", proxyAddr.Port)
@@ -42,17 +48,22 @@ func main() {
 		client, clientAddr, _ := syscall.Accept(proxyfd)
 		sa, _ := clientAddr.(*syscall.SockaddrInet4)
 		fmt.Printf("New Connection from %v\n", sa.Port)
-		if err := handleClientConnection(client); err != nil {
-			log.Printf("err: %v\n", err)
-		}
+		handleClientConnection(client)
 	}
 }
 
-func handleClientConnection(client int) error {
+func handleClientConnection(client int) {
 	for {
 		upstream, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
 		upstreamAddr := syscall.SockaddrInet4{Port: 9000, Addr: [4]byte{127, 0, 0, 1}}
-		syscall.Connect(upstream, &upstreamAddr)
+		err := syscall.Connect(upstream, &upstreamAddr)
+		defer syscall.Close(upstream)
+		if err != nil {
+			syscall.Sendto(client, []byte(HTTPError502), 0, nil)
+			fmt.Printf("<-- *   %db\n", len(HTTPError502))
+			fmt.Println("error connecting to upstream")
+			break
+		}
 		fmt.Printf("Connected to %v\n", upstreamAddr.Port)
 
 		req := createHTTPRequest()
@@ -60,54 +71,63 @@ func handleClientConnection(client int) error {
 		for req.State != END {
 			data := make([]byte, 4096)
 			n, _, err := syscall.Recvfrom(client, data, 0)
-			fmt.Println(err)
+			fmt.Printf("--> *    %dB\n", n)
 			if err != nil {
-				fmt.Println("Error receiving data:", err)
-				syscall.Sendto(client, []byte("HTTP/1.1 400 Internal Server Error\r\n\r\n"), 0, nil)
-				syscall.Close(upstream)
-				syscall.Close(client)
-				return errors.New("Error Recieving Data from client")
+				fmt.Printf("error recieving data from client: %s", err)
+				return
 			}
-			fmt.Printf("--> *     %dB\n", n)
 
-			parse(data[:n], &req)
-			if n == 0 {
+			if n <= 0 || (n == 1 && req.State == START && data[0] == '\n') {
 				close = true
 				break
 			}
-
+			parse(data[:n], &req)
 			if req.Version != "HTTP/1.1" && req.Version != "HTTP/1.0" {
-				syscall.Sendto(client, []byte("HTTP/1.1 505 HTTP Version Not Supported\r\n\r\n"), 0, nil)
-				syscall.Close(upstream)
-				syscall.Close(client)
-				return errors.New("HTTP Version not supported")
+				syscall.Sendto(client, []byte(HTTPError505), 0, nil)
+				fmt.Printf("<-- *   %dB\n", len(HTTPError505))
+				fmt.Printf("HTTP Version Not Supported")
+				break
 			}
 			syscall.Sendto(upstream, data[:n], 0, nil)
 			fmt.Printf("    * --> %dB\n", n)
-			fmt.Printf("req state: %v", req.State)
 		}
 
 		if close {
-			fmt.Println("closed")
-			syscall.Close(upstream)
-			return nil
+			return
 		}
 
-		for {
-			res := make([]byte, 1500)
-			n, _, _ := syscall.Recvfrom(upstream, res, 0)
+		res := make([]byte, 1500)
+		n, _, _ := syscall.Recvfrom(upstream, res, 0)
+		reshttp := createHTTPRequest()
+		parse(res[:n], &reshttp)
+		fmt.Printf("    * <-- %dB\n", n)
+		contentLength, err := strconv.Atoi(reshttp.Headers["Content-Length"])
+		if err != nil {
+			syscall.Sendto(client, []byte(HTTPError400), 0, nil)
+			fmt.Printf("<-- *   %dB\n", len(HTTPError400))
+			fmt.Printf("unable to parse Content-Length")
+			syscall.Close(upstream)
+			break
+		}
+
+		bytesRead := n
+		syscall.Sendto(client, res[:n], 0, nil)
+		fmt.Printf("<-- *    %dB\n", n)
+		for contentLength > bytesRead {
+			n, _, _ = syscall.Recvfrom(upstream, res, 0)
 			fmt.Printf("    * <-- %dB\n", n)
-			if n == 0 {
+			if n <= 0 {
 				break
 			}
+			bytesRead += n
 			syscall.Sendto(client, res[:n], 0, nil)
-			fmt.Printf("<-- *     %dB\n", n)
+			fmt.Printf("<-- *    %dB\n", n)
 		}
-
 		syscall.Close(upstream)
 
 		if !keepAlive(&req) {
-			return nil
+			syscall.Close(client)
+			return
 		}
 	}
 }
@@ -123,14 +143,13 @@ func keepAlive(req *HTTPRequest) bool {
 	}
 
 	if req.Headers["Connection"] != "" {
-		if req.Version == "HTTP/1.0" && req.Headers["Connection"] == "keep-alive" {
-			return true
+		if req.Version == "HTTP/1.0" && strings.ToLower(req.Headers["Connection"]) == "keep-alive" {
+			keepAlive = true
 		}
-		if req.Version == "HTTP/1.1" && req.Headers["Connection"] == "close" {
-			return false
+		if req.Version == "HTTP/1.1" && strings.ToLower(req.Headers["Connection"]) == "close" {
+			keepAlive = false
 		}
 	}
-	fmt.Println(keepAlive)
 	return keepAlive
 }
 
@@ -153,7 +172,6 @@ func parse(b []byte, req *HTTPRequest) {
 	if req.State == HEADERS {
 		for {
 			fieldLine, err := reader.ReadBytes('\n')
-
 			if fieldLine == nil {
 				break
 			}

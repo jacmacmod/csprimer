@@ -15,7 +15,7 @@ func main() {
 	s := &http.Server{
 		Addr: port,
 	}
-	s.SetKeepAlivesEnabled(false)
+	// s.SetKeepAlivesEnabled(false) (from first exercise)
 	fmt.Printf("Serving at port %s\n", port)
 
 	log.Fatal(s.ListenAndServe())
