@@ -6,37 +6,48 @@
 
 typedef struct DA {
   // TODO define our struct
-  //
+  void** items;
+  int length;
+  int capcacity;
 } DA;
 
-
 DA* DA_new (void) {
-  // TODO allocate and return a new dynamic array
+    DA* da = malloc(sizeof(DA));
+    da->items = malloc(STARTING_CAPACITY * sizeof(void*));
+    da->capcacity = STARTING_CAPACITY;
+    return da;
+}
+
+void DA_free(DA *da) {
+    free(da->items);
+    free(da);
 }
 
 int DA_size(DA *da) {
-  // TODO return the number of items in the dynamic array
+    return da->length;
 }
 
-void DA_push (DA* da, void* x) {
-  // TODO push to the end
+void DA_push(DA* da, void* x) {
+    if (da->length == da->capcacity) {
+        printf("capacity %d", da->capcacity);
+        da->capcacity <<= 1;
+        da->items = realloc(da->items, da->capcacity * sizeof(void *));
+        printf(", resized capacity to %d\n", da->capcacity);
+    }
+    da->items[da->length++] = x;
 }
 
 void *DA_pop(DA *da) {
-  // TODO pop from the end
+  if (da->length == 0) return NULL;
+  return da->items[--da->length];
 }
 
 void DA_set(DA *da, void *x, int i) {
-  // TODO set at a given index, if possible
+  da->items[i] = x;
 }
 
 void *DA_get(DA *da, int i) {
-  // TODO get from a given index, if possible
-}
-
-
-void DA_free(DA *da) {
-  // TODO deallocate anything on the heap
+     return *(da->items + i);
 }
 
 int main() {

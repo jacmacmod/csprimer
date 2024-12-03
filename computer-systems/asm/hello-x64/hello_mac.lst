@@ -1,0 +1,25 @@
+     1                                  ; ----------------------------------------------------------------------------------------
+     2                                  ; Writes "Hello, World" to the console using only system calls. Runs on 64-bit macOS only.
+     3                                  ; To assemble and run:
+     4                                  ;
+     5                                  ;     nasm -fmacho64 hello_mac.asm && ld -lSystem hello_mac.o && ./a.out
+     6                                  ;
+     7                                  ; Derived from the NASM tutorial at https://cs.lmu.edu/~ray/notes/nasmtutorial/
+     8                                  ; ----------------------------------------------------------------------------------------
+     9                                  
+    10                                            global    _main
+    11                                  
+    12                                            section   .text
+    13 00000000 B804000002              _main:    mov       rax, 0x02000004         ; system call for write
+    14 00000005 BF01000000                        mov       rdi, 1                  ; file handle 1 is stdout
+    15 0000000A 48BE-                             mov       rsi, message            ; address of string to output
+    15 0000000C [0000000000000000] 
+    16 00000014 BA0D000000                        mov       rdx, 13                 ; number of bytes
+    17 00000019 0F05                              syscall                           ; invoke operating system to do the write
+    18 0000001B B801000002                        mov       rax, 0x02000001         ; system call for exit
+    19 00000020 4831FF                            xor       rdi, rdi                ; exit code 0
+    20 00000023 0F05                              syscall                           ; invoke operating system to exit
+    21                                  
+    22                                            section   .data
+    23 00000000 48656C6C6F2C20576F-     message:  db        "Hello, World", 10      ; note the newline at the end
+    23 00000009 726C640A           
