@@ -1,4 +1,5 @@
 import { CsvParseStream } from "@std/csv/parse-stream";
+import { parseArgs } from "jsr:@std/cli/parse-args";
 
 type row = string | number | boolean;
 type Nodeq = CSVFileScan | LimitNode;
@@ -6,7 +7,7 @@ type Nodeq = CSVFileScan | LimitNode;
 class CSVFileScan {
   path: string;
   csv: Deno.FsFile | undefined;
-  reader: ReadableStreamDefaultReader<Record<string, string>>;
+  reader: ReadableStreamDefaultReader<Record<string, string>> | undefined;
   
   constructor(path: string) {
     this.path = path;
@@ -20,7 +21,7 @@ class CSVFileScan {
       this.stop()
       return null;
     }
-    return result.value && Object.values(result.value);
+    return result?.value && Object.values(result.value);
   }
 
   async initializeCsvReader() {
@@ -45,7 +46,7 @@ class CSVFileScan {
 }
 
 class LimitNode {
-  child: Nodeq;
+  child: Nodeq | undefined;
   n: number;
   count: number;
 
@@ -54,16 +55,16 @@ class LimitNode {
     this.count = 0;
   }
 
-  async next() {
+  async next(): Promise<row[] | null> {
     if (this.count === this.n) {
-      this.child.stop();
+      if (this.child instanceof CSVFileScan) this.child.stop();
       return null;
     }
     
-    const row = await this.child.next();
+    const row = await this.child?.next();
     this.count++;
     
-    if (row === null) return null;
+    if (row === null || row === undefined) return null;
     if (row.length === 0) return [];
 
     return row;
@@ -72,12 +73,14 @@ class LimitNode {
 
 function Q(nodes: Array<Nodeq>): Nodeq {
   const ns = nodes[Symbol.iterator]();
-  const root = ns.next().value;
-  let parent = root;
+  const root: Nodeq = ns.next().value!;
+  let parent: Nodeq = root;
 
   for (const n of ns) {
-    parent.child = n;
-    parent = n;
+    if (parent instanceof LimitNode) {
+      parent.child = n;
+      parent = n;
+    }
   }
   return root;
 }
@@ -93,8 +96,14 @@ async function* run(q: Nodeq) {
 }
 
 async function main() {
+  const flags = parseArgs(Deno.args, {
+    string: ["csv"],
+    default: { csv: "/tmp/ml-20m/movies.csv" },
+  });
+  
+  console.log("Wants help?", flags.help);
   const gen = run(
-    Q([new LimitNode(3), new CSVFileScan("/tmp/ml-20m/movies.csv")])
+    Q([new LimitNode(10), new CSVFileScan(flags.csv)])
   );
   
   for await (const value of gen) {

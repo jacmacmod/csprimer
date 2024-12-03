@@ -3,6 +3,8 @@
   "specifiers": {
     "jsr:@std/assert@1": "1.0.8",
     "jsr:@std/bytes@^1.0.3": "1.0.4",
+    "jsr:@std/cli@*": "1.0.7",
+    "jsr:@std/cli@^1.0.7": "1.0.7",
     "jsr:@std/csv@*": "1.0.4",
     "jsr:@std/csv@^1.0.4": "1.0.4",
     "jsr:@std/internal@^1.0.5": "1.0.5",
@@ -17,6 +19,9 @@
     },
     "@std/bytes@1.0.4": {
       "integrity": "11a0debe522707c95c7b7ef89b478c13fb1583a7cfb9a85674cd2cc2e3a28abc"
+    },
+    "@std/cli@1.0.7": {
+      "integrity": "98359df9df586a69015ba570305183b0cb9e7d53c05ea2016ef9a3e77e82c7cd"
     },
     "@std/csv@1.0.4": {
       "integrity": "aa351de654b10b8a407275b61f588863b9538027fd47aed90dd9e7f54ab5bdc0",
@@ -37,6 +42,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@std/assert@1",
+      "jsr:@std/cli@^1.0.7",
       "jsr:@std/csv@^1.0.4"
     ]
   }
