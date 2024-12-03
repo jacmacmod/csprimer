@@ -1,3 +1,5 @@
+import { CsvParseStream } from "@std/csv/parse-stream";
+
 type row = string | number | boolean;
 type projectionFunction = (arr: Array<row>) => Array<row>;
 type selectionFunction = (arr: Array<row>) => boolean;
@@ -31,16 +33,51 @@ class MemoryScan {
   }
 }
 
+class CSVFileScan {
+  path: string;
+  csv: Deno.FsFile | undefined;
+  reader: ReadableStreamDefaultReader<string[]> | undefined
+  done: boolean = false;
+  
+  // "/tmp/ml-20m/movies.csv"
+  constructor(path: string) {
+    this.path = path;
+  }
+  
+  async next() {
+    console.log("csv", this.csv)
+    if (this.csv === undefined) {
+      console.log("here", this.path)
+      this.csv = await Deno.open(this.path, { read: true });
+      
+      this.reader = this.csv.readable
+        .pipeThrough(new TextDecoderStream())
+        .pipeThrough(new CsvParseStream())
+        .getReader(); 
+    } else {
+      if (this.done) return null
+      const result = await this.reader?.read()
+      console.log("result", result)
+      if (result?.done) {
+        this.done = true;
+        this.csv.close();
+      } 
+      return result?.value
+    }
+  }
+}
+
+
 class ProjectionNode {
   fn: projectionFunction;
-  child: Nodeq;
+  child: Nodeq | undefined;
 
   constructor(fn: projectionFunction) {
     this.fn = fn;
   }
 
   next() {
-    let row = this.child.next();
+    const row = this.child?.next();
 
     if (row === null) return null;
     if (row.length === 0) return [];
@@ -78,9 +115,9 @@ class LimitNode {
     this.count = 0;
   }
 
-  next() {
-    let row = this.child.next();
-
+  async next() {
+    const row = await this.child.next();
+    console.log(row)
     if (row === null) return null;
     if (this.count === this.n) return null;
     if (row.length === 0) return [];
@@ -93,8 +130,8 @@ class LimitNode {
 class SortNode {
   sortFunc: sortFunction;
   sign: number = 1;
-  child: MemoryScan;
-  sortedRows: Array<Array<row>>;
+  child: MemoryScan | undefined;
+  sortedRows: Array<Array<row>> = [];
   idx: number = 0;
 
   constructor(sortFunc: sortFunction, desc: boolean = false) {
@@ -117,7 +154,7 @@ class SortNode {
       this.sortedRows = [];
 
       while (true) {
-        let r = this.child.next();
+        const r = this.child?.next();
         if (!r) break;
 
         this.sortedRows.push(r);
@@ -138,8 +175,6 @@ class SortNode {
   }
 }
 
-class CSVFileScan {}
-
 const compareArrays = (a: row[][], b: row[][]): boolean => {
   if (a.length !== b.length) return false;
 
@@ -155,20 +190,22 @@ const compareArrays = (a: row[][], b: row[][]): boolean => {
 };
 
 function Q(nodes: Array<Nodeq>): Nodeq {
-  let ns = nodes[Symbol.iterator]();
-  let root = ns.next().value;
+  const ns = nodes[Symbol.iterator]();
+  const root = ns.next().value;
   let parent = root;
 
-  for (let n of ns) {
-    parent.child = n;
-    parent = n;
+  for (const n of ns) {
+    // if (typeof n !== MemoryScan) {
+      parent.child = n;
+      parent = n;
+    // }
   }
   return root;
 }
 
 function* run(q: Nodeq) {
   while (true) {
-    let x = q.next();
+    const x = q.next();
 
     if (Array.isArray(x) && x.length === 0) continue;
     if (!x) break;
@@ -198,45 +235,78 @@ function main() {
     ["in_us", Boolean],
   ];
 
-  const result1: row[][] = [
+  // const result1: row[][] = [
+  //   ...run(
+  //     Q([
+  //       new ProjectionNode((row: row[]) => [row[1]]),
+  //       new SelectionNode((row: row[]) => row[3] === false),
+  //       new MemoryScan(birds),
+  //     ]),
+  //   ),
+  // ];
+
+  // console.assert(
+  //   compareArrays(result1, [
+  //     ["Ostrich"],
+  //     ["Emperor Penguin"],
+  //     ["Wandering Albatross"],
+  //   ]),
+  // );
+
+  // const result2: row[][] = [
+  //   ...run(
+  //     Q([
+  //       new ProjectionNode((row: row[]) => [row[0], row[2]]),
+  //       new LimitNode(3),
+  //       new SortNode((row: row[]) => row[2], true),
+  //       new MemoryScan(birds),
+  //     ]),
+  //   ),
+  // ];
+
+  // console.assert(
+  //   compareArrays(result2, [
+  //     ["ostric1", 104.0],
+  //     ["emppen1", 23.0],
+  //     ["wanalb", 8.5],
+  //   ]),
+  // );
+
+  const result3: row[][] = [
     ...run(
       Q([
-        new ProjectionNode((row: row[]) => [row[1]]),
-        new SelectionNode((row: row[]) => row[3] === false),
-        new MemoryScan(birds),
-      ]),
-    ),
-  ];
-
-  console.assert(
-    compareArrays(result1, [
-      ["Ostrich"],
-      ["Emperor Penguin"],
-      ["Wandering Albatross"],
-    ]),
-  );
-
-  const result2: row[][] = [
-    ...run(
-      Q([
-        new ProjectionNode((row: row[]) => [row[0], row[2]]),
         new LimitNode(3),
-        new SortNode((row: row[]) => row[2], true),
-        new MemoryScan(birds),
+        new CSVFileScan("/tmp/ml-20m/movies.csv"),
       ]),
     ),
   ];
-
-  console.assert(
-    compareArrays(result2, [
-      ["ostric1", 104.0],
-      ["emppen1", 23.0],
-      ["wanalb", 8.5],
-    ]),
-  );
-
-  const input = Deno.open("/tmp/ml-20m/movies.csv");
+  
+  console.log("her", result3)
   console.log("done");
 }
 
 main();
+
+// async function main2() {
+//   using csv = await Deno.open("/tmp/ml-20m/movies.csv", { read: true });
+//   // const csvStream = new CsvStream(csv.readable);
+//   const source = ReadableStream.from([
+//     "name,age\n",
+//     "Alice,34\n",
+//     "Bob,24\n",
+//   ]);
+//   csv.readable
+  
+//   source
+// const something = csv.readable.pipeThrough(new TextDecoderStream()).
+//   pipeThrough(new CsvParseStream())
+//   const reader = something.getReader();
+//   let result = await reader.read()
+//   console.log(result);
+//   result = await reader.read()
+//   console.log(result);
+//   // console.log(`Read chunk: ${decoder.decode(result.value)}`)
+  
+// }
+
+// main2();
