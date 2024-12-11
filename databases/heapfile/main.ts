@@ -1,5 +1,5 @@
 import { CsvParseStream } from "@std/csv/parse-stream";
-import { parseArgs } from "jsr:@std/cli/parse-args";
+import { parseArgs } from "@std/cli/parse-args";
 
 type row = {
   [key: string]: rowItem;
@@ -75,49 +75,33 @@ export async function* run(q: Nodeq) {
   }
 }
 
-// async function main() {
-//   const flags = parseArgs(Deno.args, {
-//     string: ["csv"],
-//     default: { csv: "../ml-20m/movies.csv" },
-//   });
-
-//   const gen = run(Q([new CSVFileScan(flags.csv)]));
-
-//   for await (const value of gen) {
-//     console.log(value)
-//   }
-// }
-// main()
-
 type encodedRow = Uint8Array;
 
-// supported types?
+// write binary to file movies.data and read it back out
+// add support for slotted pages
+// incorporate as fileScan
+// maybe support null maps
 
-//
+// page index (4 byte)
+// upper index
+// lower index
+// pointers list
+
+// row from bottom pointer_id row -> row info
 export function encode(row: row): encodedRow {
-  // TODO row id handling
-  // 2 null bytes of padding
-  // row
-  // id byte id starting from 0 (1 byte for now)
-  //
-  // int is 3 bytes with 1 bytes of padding anything bigger is not allowed for now
-  // string has length and null terminator
-  // for (const prop in row) {
-  //   const propParsed = parseInt(prop);
-  //   if (Number.isInteger(propParsed)) {
-  //     console.log("what", propParsed);
-
-
   const movieId = encodeNumber(Number(row.movieId) as number);
   const title = encodeString(row.title as string);
   const genres = encodeString(row.genres as string);
-
-  return new Uint8Array([...movieId, ...title, ...genres]);
+  const rowLength = movieId.length + title.length + genres.length;
+  const size = new Uint8Array(2);
+  size[0] = rowLength & 0xff;
+  size[1] = (rowLength >> 8) & 0xff;
+  return new Uint8Array([...size, ...movieId, ...title, ...genres]);
 }
 
 export function decode(row: encodedRow): row {
   let idx = 0;
-  const movieID = decodeNumber(row.slice(0, 4))
+  const movieID = decodeNumber(row.slice(0, 4));
   idx = 4;
   const title = decodeString(row.slice(idx, idx + 1 + row[idx]));
   idx = idx + row[idx] + 2;
@@ -153,5 +137,53 @@ export function encodeNumber(n: number): Uint8Array {
 }
 
 export function decodeNumber(arr: Uint8Array): number {
-  return arr[0] + ((arr[1] << 8)) + ((arr[2] << 16));
+  return arr[0] + (arr[1] << 8) + (arr[2] << 16);
 }
+
+async function main() {
+  // const flags = parseArgs(Deno.args, {
+  //   string: ["csv"],
+  //   default: { csv: "../ml-20m/movies.csv" },
+  // });
+
+  // const gen = run(Q([new CSVFileScan(flags.csv)]));
+  // // open file for writing
+  // const file = await Deno.create("movies.data");
+  // const writer = file.writable.getWriter();
+
+  
+  // for await (const row of gen) {
+  //   const encodedRow = encode(row);
+  //   writer.write(encodedRow);
+  // }
+  // writer.close();
+
+  const dataFile = await Deno.open("movies.data", { read: true });
+  const lenBuffer = new Uint8Array(2);
+  let x = 0
+  while (true) {
+    const bytesRead = await dataFile.read(lenBuffer);
+    if (bytesRead === null || bytesRead === 0) break;
+    console.log(lenBuffer)
+    const newBuf = new Uint8Array(lenBuffer[0] + (lenBuffer[1] << 8))
+    await dataFile.read(newBuf);
+    const row = decode(newBuf);
+    console.log(row)
+    console.log(newBuf)
+    x++ 
+  }
+  
+  dataFile.close()
+  // let bytesRead = dataFile.read(buffer);
+  
+  // const inputReader = dataFile.readable.getReader();
+  // while (true) {
+  //   const result = await inputReader.read();
+  //   if (result.done) {
+  //     break;
+  //   }
+  //   console.log(result.value, result.value?.length, decode(result.value))
+  // }
+}
+
+main();
