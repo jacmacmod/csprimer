@@ -106,7 +106,6 @@ export function decode(row: encodedRow): row {
   const title = decodeString(row.slice(idx, idx + 1 + row[idx]));
   idx = idx + row[idx] + 2;
   const genres = decodeString(row.slice(idx, idx + 1 + row[idx]));
-
   return {
     movieId: String(movieID),
     title: title,
@@ -140,50 +139,200 @@ export function decodeNumber(arr: Uint8Array): number {
   return arr[0] + (arr[1] << 8) + (arr[2] << 16);
 }
 
-async function main() {
-  // const flags = parseArgs(Deno.args, {
-  //   string: ["csv"],
-  //   default: { csv: "../ml-20m/movies.csv" },
-  // });
+export function decodeNumber2bytesAsNumber(arr: Uint8Array): number {
+  return arr[0] + (arr[1] << 8);
+}
 
-  // const gen = run(Q([new CSVFileScan(flags.csv)]));
-  // // open file for writing
-  // const file = await Deno.create("movies.data");
-  // const writer = file.writable.getWriter();
+function encode2byteInt(n: number): number[] {
+  const arr = new Array(2);
+  arr[0] = n & 0xff;
+  arr[1] = (n >> 8) & 0xff;
+  return arr;
+}
 
-  
-  // for await (const row of gen) {
-  //   const encodedRow = encode(row);
-  //   writer.write(encodedRow);
-  // }
-  // writer.close();
+class Page {
+  id: number;
+  pageSize: number = 8096;
 
-  const dataFile = await Deno.open("movies.data", { read: true });
-  const lenBuffer = new Uint8Array(2);
-  let x = 0
-  while (true) {
-    const bytesRead = await dataFile.read(lenBuffer);
-    if (bytesRead === null || bytesRead === 0) break;
-    console.log(lenBuffer)
-    const newBuf = new Uint8Array(lenBuffer[0] + (lenBuffer[1] << 8))
-    await dataFile.read(newBuf);
-    const row = decode(newBuf);
-    console.log(row)
-    console.log(newBuf)
-    x++ 
+  upperOffset: number = 6;
+  lowerOffset: number;
+
+  currentRowId: number = 0;
+
+  rowOffsets: number[] = [];
+  rows: number[][] = [];
+
+  constructor(pageId: number, pageSize: number) {
+    // pageid (2) lower(2) upper(2) (rowItem(2)...n items))
+    this.id = pageId;
+    this.pageSize = pageSize;
+
+    this.lowerOffset = this.pageSize;
   }
-  
-  dataFile.close()
-  // let bytesRead = dataFile.read(buffer);
-  
-  // const inputReader = dataFile.readable.getReader();
-  // while (true) {
-  //   const result = await inputReader.read();
-  //   if (result.done) {
-  //     break;
-  //   }
-  //   console.log(result.value, result.value?.length, decode(result.value))
-  // }
+
+  addRow(row: number[]) {
+    this.rows?.push(row);
+    this.upperOffset += 2;
+    this.lowerOffset -= row.length;
+    this.rowOffsets.push(this.lowerOffset);
+  }
+
+  encodeRow(row: row): number[] {
+    const movieId = this.encodeNumber(Number(row.movieId) as number);
+    const title = encodeString(row.title as string);
+    const genres = encodeString(row.genres as string);
+
+    return [...movieId, ...title, ...genres];
+  }
+
+  encodeString(str: string): number[] {
+    if (str.length > 255) {
+      console.error("string too long");
+    }
+    const textEncoder = new TextEncoder();
+    const encoded = textEncoder.encode(str);
+    return Array.from(new Uint8Array([encoded.length, ...encoded, 0]));
+  }
+
+  encodeNumber(n: number): number[] {
+    const arr = new Array(4).fill(0);
+    arr[0] = n & 0xff;
+    arr[1] = (n >> 8) & 0xff;
+    arr[2] = (n >> 16) & 0xff;
+    return arr;
+  }
+
+  createBuffer(): Uint8Array {
+    // pageid (2) lower(2) upper(2) (rowItem(2)...n items))
+    const rowOffsets: number[] = [];
+    for (const v of this.rowOffsets) {
+      const arr = encode2byteInt(v);
+      rowOffsets.push(arr[0]);
+      rowOffsets.push(arr[1]);
+    }
+
+    let arr = [
+      ...encode2byteInt(this.id),
+      ...encode2byteInt(this.lowerOffset),
+      ...encode2byteInt(this.upperOffset),
+      ...rowOffsets,
+      ...new Array(this.lowerOffset - this.upperOffset).fill(0),
+    ];
+
+    if (this.lowerOffset - this.upperOffset < 2) {
+      console.log(this.id, this.lowerOffset - this.upperOffset, "death");
+      Deno.exit(1);
+    }
+
+    for (let i = this.rows!.length - 1; i >= 0; i--) {
+      arr = [...arr, ...this!.rows[i]];
+    }
+
+    if (arr.length !== this.pageSize) {
+      console.log(
+        arr,
+        new Array(this.lowerOffset - this.upperOffset).fill(0).length
+      );
+      Deno.exit(1);
+    }
+    return new Uint8Array(arr);
+  }
+}
+
+async function writeHeapFile(pageSize: number) {
+  const flags = parseArgs(Deno.args, {
+    string: ["csv"],
+    default: { csv: "../ml-20m/movies.csv" },
+  });
+
+  const gen = run(Q([new CSVFileScan(flags.csv)]));
+
+  const file = await Deno.create("movies.data");
+  const writer = file.writable.getWriter();
+
+  let pageNumber: number = 1;
+  let page = new Page(pageNumber, pageSize);
+  let totalMovies = 0;
+
+  for await (const row of gen) {
+    const encodedRow = page.encodeRow(row);
+    totalMovies++;
+
+    if (page.lowerOffset - page.upperOffset < encodedRow.length + 6) {
+      writer.write(page.createBuffer());
+      pageNumber++;
+      page = new Page(pageNumber, pageSize);
+    }
+    page.addRow(encodedRow);
+  }
+
+  console.log("total movies", totalMovies, "page number", pageNumber);
+
+  writer.write(page.createBuffer());
+  writer.close();
+}
+
+async function readHeapFile(pageSize: number) {
+  const file = await Deno.open("movies.data", { read: true });
+
+  const buf = new Uint8Array(pageSize);
+  let pageCount = 1;
+  let totalMovies = 0;
+
+  try {
+    let bytesRead: number | null;
+
+    while ((bytesRead = await file.read(buf)) !== null) {
+      if (bytesRead > 0) {
+        let x = 6; // Start offset for data within the page
+        let max = buf.length;
+
+        while (true) {
+          const curr = decodeNumber2bytesAsNumber(buf.slice(x, x + 2));
+
+          if (curr === 0) {
+            break;
+          }
+
+          const row = decode(buf.slice(curr, max));
+          console.log(row);
+
+          if (!row || row.movieId === "NaN") {
+            console.error("Invalid row data, terminating...");
+            return;
+          } else {
+            totalMovies++;
+          }
+
+          x += 2; // Move to the next offset
+          max = curr;
+        }
+        pageCount++;
+      }
+    }
+  } finally {
+    file.close();
+  }
+  console.log(pageCount);
+  console.log(totalMovies);
+}
+
+async function main() {
+  const pageSize = 1024;
+
+  await writeHeapFile(pageSize);
+  await readHeapFile(pageSize);
 }
 
 main();
+
+// let bytesRead = dataFile.read(buffer);
+
+// const inputReader = dataFile.readable.getRea der();
+// while (true) {
+//   const result = await inputReader.read();
+//   if (result.done) {
+//     break;
+//   }
+//   console.log(result.value, result.value?.length, decode(result.value))
+// }
