@@ -1,179 +1,24 @@
-import { CsvParseStream } from "@std/csv/parse-stream";
-import { parseArgs } from "jsr:@std/cli/parse-args";
+import { CSVFileScan, DataFileScan, MemoryScan, Nodeq } from "./nodes.ts";
 
-type row = {
-  [key: string]: rowItem;
-};
-type rowItem = string | number | boolean;
-// type projectionFunction = (r: row) => row;
-type selectionFunction = (r: row) => boolean;
-// type sortFunction = (r: row) => rowItem;
-type Nodeq =
-  | CSVFileScan
-  | LimitNode
-  | MemoryScan
-  | ProjectionNode
-  | SelectionNode
-  // | SortNode;
+import { row, encodedRow } from "./type.ts";
 
-class CSVFileScan {
-  path: string;
-  csv: Deno.FsFile | undefined;
-  schema: string[] | undefined;
-  reader: ReadableStreamDefaultReader<string[]> | undefined;
+// export function Q(nodes: Array<Nodeq>): Nodeq {
+//   const ns = nodes[Symbol.iterator]();
+//   const root: Nodeq = ns.next().value!;
+//   return root;
+// }
 
-  constructor(path: string) {
-    this.path = path;
-  }
-
-  async next() {
-    console.log(this.csv)
-    if (this.csv === undefined) await this.initializeCsvReader();
-
-    const result = await this.reader?.read();
-    if (result?.done) {
-      this.stop();
-      return null;
-    }
-    return result?.value && this.zip(Object.values(result.value));
-  }
-
-  async initializeCsvReader() {
-    this.csv = await Deno.open(this.path, { read: true });
-    console.log("here")
-    this.reader = this.csv.readable
-      .pipeThrough(new TextDecoderStream())
-      .pipeThrough(new CsvParseStream())
-      .getReader();
-
-    // use first rowItem for schema
-    const result = await this.reader?.read();
-    if (result && !result.done) this.schema = result.value;
-  }
-
-  stop() {
-    if (this.csv) this.csv.close();
-
-    console.log("File closed.");
-    return null;
-  }
-
-  zip(values: string[]): row {
-    const schema = this.schema!;
-    return values.reduce((obj, element, i) => {
-      obj[schema[i]] = element;
-      return obj;
-    }, {} as row);
-  }
-}
-
-class MemoryScan {
-  idx: number;
-  table: rowItem[][];
-  schema: string[][];
-  sorted: boolean = false;
-
-  constructor(table: rowItem[][], schema: string[][]) {
-    this.table = table;
-    this.schema = schema;
-    this.idx = 0;
-  }
-
-  next() {
-    if (this.idx >= this.table.length) {
-      return null;
-    }
-
-    const row = this.zip(this.table[this.idx]);
-    this.idx += 1;
-    return row;
-  }
-
-  zip(values: rowItem[]): row {
-    const schema = this.schema;
-    return values.reduce((obj, element, i) => {
-      obj[schema[i][0]] = element; 
-      return obj;
-    }, {} as row);
-  }
-}
-
-class ProjectionNode {
-  child: Nodeq | undefined;
-  columns: string[];
-
-  constructor(colunms: string[]) {
-    this.columns = colunms
-  }
-
-  async next(): Promise<row | null> {
-    const row = await this.child?.next();
-    
-    console.log(row)
-    
-    if (row === null || row === undefined) return null;
-    if (Object.keys(row).length === 0) return {} as row;
-    console.log(Object.fromEntries(Object.entries(row).filter(([k]) => this.columns.includes(k))))
-    return {"jack": "jack"}
-    // return Object.fromEntries(Object.entries(row).filter(([k]) => this.columns.includes(k)));
-  }
-}
-
-class SelectionNode {
-  child: Nodeq | undefined;
-  fn: selectionFunction;
-
-  constructor(fn: selectionFunction) {
-    this.fn = fn;
-  }
-
-  async next(): Promise<row | null> {
-    let row = await this.child?.next();
-    row = await this.child?.next();
-    row = await this.child?.next();
-    row = await this.child?.next();
-    console.log(row)
-    if (row === null || row === undefined) return null;
-    if (Object.keys(row).length === 0) return {} as row;
-    if (this.fn(row)) return row;
-
-    return {} as row;
-  }
-}
-
-class LimitNode {
-  child: Nodeq | undefined;
-  n: number;
-  count: number;
-
-  constructor(n: number) {
-    this.n = n;
-    this.count = 0;
-  }
-
-  async next(): Promise<row | null> {
-    if (this.count === this.n) {
-      if (this.child instanceof CSVFileScan) this.child.stop();
-      return null;
-    }
-
-    const row = await this.child?.next();
-    this.count++;
-
-    if (row === null || row === undefined) return null;
-    if (Object.keys(row).length === 0) return {} as row;
-
-    return row;
-  }
-}
-
-function Q(nodes: Array<Nodeq>): Nodeq {
+export function Q(nodes: Array<Nodeq>): Nodeq {
   const ns = nodes[Symbol.iterator]();
   const root: Nodeq = ns.next().value!;
   let parent: Nodeq = root;
 
   for (const n of ns) {
-    if (parent instanceof LimitNode) {
+    if (
+      !(parent instanceof CSVFileScan) &&
+      !(parent instanceof MemoryScan) &&
+      !(parent instanceof DataFileScan)
+    ) {
       parent.child = n;
       parent = n;
     }
@@ -181,34 +26,77 @@ function Q(nodes: Array<Nodeq>): Nodeq {
   return root;
 }
 
-async function* run(q: Nodeq) {
+export async function* run(q: Nodeq) {
   while (true) {
     const row = await q.next();
-    if (row && typeof row === "object" && Object.keys(row).length === 0) continue;
+    if (row && typeof row === "object" && Object.keys(row).length === 0)
+      continue;
     if (!row) break;
 
     yield await Promise.resolve(row);
   }
 }
 
-async function main() {
-  const flags = parseArgs(Deno.args, {
-    string: ["csv"],
-    default: { csv: "/tmp/ml-20m/movies.csv" },
-  });
-
-  const gen = run(
-    Q([
-      // new ProjectionNode(["title"]),
-      // new LimitNode(2),
-      new SelectionNode((row: row) => row["title"] === false),
-      new CSVFileScan(flags.csv),
-    ])
-  );
-
-  for await (const value of gen) {
-    console.log(value);
-  }
+// encoders decoders
+export function encode(row: row): encodedRow {
+  const movieId = encodeNumber(Number(row.movieId) as number);
+  const title = encodeString(row.title as string);
+  const genres = encodeString(row.genres as string);
+  const rowLength = movieId.length + title.length + genres.length;
+  const size = new Uint8Array(2);
+  size[0] = rowLength & 0xff;
+  size[1] = (rowLength >> 8) & 0xff;
+  return new Uint8Array([...size, ...movieId, ...title, ...genres]);
 }
 
-main();
+export function decode(row: encodedRow): row {
+  let idx = 0;
+  const movieID = decodeNumber(row.slice(0, 4));
+  idx = 4;
+  const title = decodeString(row.slice(idx, idx + 1 + row[idx]));
+  idx = idx + row[idx] + 2;
+  const genres = decodeString(row.slice(idx, idx + 1 + row[idx]));
+  return {
+    movieId: String(movieID),
+    title: title,
+    genres: genres,
+  } as row;
+}
+
+export function encodeString(str: string): Uint8Array {
+  if (str.length > 255) {
+    console.error("string too long");
+  }
+
+  const textEncoder = new TextEncoder();
+  const encoded = textEncoder.encode(str);
+  return new Uint8Array([encoded.length, ...encoded, 0]);
+}
+
+export function decodeString(arr: Uint8Array): string {
+  const decoder = new TextDecoder();
+  return decoder.decode(arr.slice(1, arr[0] + 1));
+}
+
+export function encodeNumber(n: number): Uint8Array {
+  const arr = new Uint8Array(4);
+  arr[0] = n & 0xff;
+  arr[1] = (n >> 8) & 0xff;
+  arr[2] = (n >> 16) & 0xff;
+  return arr;
+}
+
+export function decodeNumber(arr: Uint8Array): number {
+  return arr[0] + (arr[1] << 8) + (arr[2] << 16);
+}
+
+export function encode2byteInt(n: number): number[] {
+  const arr = new Array(2);
+  arr[0] = n & 0xff;
+  arr[1] = (n >> 8) & 0xff;
+  return arr;
+}
+
+export function decodeNumber2bytesAsNumber(arr: Uint8Array): number {
+  return arr[0] + (arr[1] << 8);
+}
