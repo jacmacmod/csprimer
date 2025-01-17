@@ -1,10 +1,12 @@
-import { Q, run } from "./util.ts";
-import { DataFileScan, LimitNode } from "./nodes.ts";
+import { Q, run, } from "./util.ts";
+import { DataFileScan, LimitNode, ProjectionNode, SelectionNode } from "./nodes.ts";
 
 async function main() {
   const gen = run(
     Q([
-      new LimitNode(5),
+      new ProjectionNode(["title", "genres"]),
+      new SelectionNode((row) => row["genres"] === "Adventure"),
+      new LimitNode(2000),
       new DataFileScan("movies.data", 1024),
     ])
   );

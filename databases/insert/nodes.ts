@@ -10,6 +10,7 @@ export type Nodeq =
   | DataFileScan
   | LimitNode
   | ProjectionNode
+  | CountNode
   | SelectionNode;
 
 export class DataFileScan {
@@ -26,7 +27,7 @@ export class DataFileScan {
     if (!this.heapFile) await this.load();
     if (!this.heapFile) Deno.exit(1);
     const result: row | null = this.heapFile.read();
-
+    console.log(result);
     if (result) return result;
     const page = await this.heapFile.nextPage();
 
@@ -144,8 +145,25 @@ export class ProjectionNode {
     if (Object.keys(row).length === 0) return {} as row;
 
     return Object.fromEntries(
-      Object.entries(row).filter(([k]) => this.columns.includes(k))
+      Object.entries(row).filter(([k]) => this.columns.includes(k)),
     );
+  }
+}
+
+export class CountNode {
+  child: Nodeq | undefined;
+  done: boolean = false;
+
+  async next(): Promise<number | null> {
+    if (this.child === null) return 0;
+    if (this.done) return null;
+    let row;
+    let count = 0;
+    while ((row = await this.child?.next()) !== null) {
+      count++;
+    }
+    this.done = true;
+    return count;
   }
 }
 

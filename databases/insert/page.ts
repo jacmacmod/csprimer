@@ -16,7 +16,7 @@ const defaultPageSize = 1024;
 
 export class Page {
   id: number;
-  pageSize: number = 8096;
+  pageSize: number = defaultPageSize;
 
   upperOffset: number = 6;
   lowerOffset: number;
@@ -178,7 +178,6 @@ export class HeapFile {
   done: boolean = false;
   lowerIdx: number = 6;
   prevOffset: number = defaultPageSize;
-  offset: number = 0;
   currentPage: number = 1;
 
   constructor(path: string, pageSize: number) {
@@ -210,6 +209,68 @@ export class HeapFile {
     this.prevOffset = offset;
 
     return row;
+  }
+
+  encodeRow(row: row): number[] {
+    const movieId = this.encodeNumber(Number(row.movieId) as number);
+    const title = encodeString(row.title as string);
+    const genres = encodeString(row.genres as string);
+
+    return [...movieId, ...title, ...genres];
+  }
+
+  encodeString(str: string): number[] {
+    if (str.length > 255) {
+      console.error("string too long");
+    }
+    const textEncoder = new TextEncoder();
+    const encoded = textEncoder.encode(str);
+    return Array.from(new Uint8Array([encoded.length, ...encoded, 0]));
+  }
+
+  encodeNumber(n: number): number[] {
+    const arr = new Array(4).fill(0);
+    arr[0] = n & 0xff;
+    arr[1] = (n >> 8) & 0xff;
+    arr[2] = (n >> 16) & 0xff;
+    return arr;
+  }
+
+  async insert(rows: row[]) {
+    const fileInfo = await Deno.stat(this.path);
+    console.assert(fileInfo.size % this.pageSize !== 0);
+    let lastPageNumber = fileInfo.size / this.pageSize;
+
+    this.file = await Deno.open(this.path, { read: true, write: true });
+
+    await this.file.seek(-this.pageSize, Deno.SeekMode.End);
+    this.buf = new Uint8Array(this.pageSize);
+    await this.file.read(this.buf);
+    await this.file.seek(-this.pageSize, Deno.SeekMode.End);
+
+    while (this.read() !== null) {}
+
+    for (const row of rows) {
+      const encodedRow = this.encodeRow(row);
+      if (this.prevOffset - this.lowerIdx < encodedRow.length + 6) {
+        this.file.write(this.buf);
+
+        this.buf = new Uint8Array(this.pageSize);
+        this.lowerIdx = 6;
+        this.prevOffset = this.pageSize;
+        this.buf.set(encode2byteInt(lastPageNumber));
+        lastPageNumber++;
+      }
+
+      const offset = this.prevOffset - encodedRow.length;
+      this.buf.set(encode2byteInt(offset), this.lowerIdx);
+      this.buf.set(encodedRow, offset);
+
+      this.lowerIdx += 2;
+      this.prevOffset = offset;
+    }
+    this.file.write(this.buf);
+    this.file.close();
   }
 
   async nextPage(): Promise<number | null> {

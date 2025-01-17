@@ -1,6 +1,7 @@
 import { CsvParseStream } from "@std/csv/parse-stream";
 import { row, rowItem } from "./type.ts";
 import { HeapFile } from "./page.ts";
+import { columnDefinition, getSchema } from "./util.ts";
 
 export type selectionFunction = (r: row) => boolean;
 
@@ -10,21 +11,23 @@ export type Nodeq =
   | DataFileScan
   | LimitNode
   | ProjectionNode
+  | CountNode
   | SelectionNode;
 
 export class DataFileScan {
-  path: string;
+  table: string;
   pageSize: number;
   heapFile: HeapFile | undefined;
 
   constructor(path: string, pageSize: number) {
-    this.path = path;
+    this.table = path;
     this.pageSize = pageSize;
   }
 
   async next() {
     if (!this.heapFile) await this.load();
     if (!this.heapFile) Deno.exit(1);
+
     const result: row | null = this.heapFile.read();
 
     if (result) return result;
@@ -35,7 +38,7 @@ export class DataFileScan {
   }
 
   async load() {
-    this.heapFile = new HeapFile(this.path, this.pageSize);
+    this.heapFile = new HeapFile(this.table, this.pageSize);
     await this.heapFile.load();
   }
 
@@ -50,11 +53,14 @@ export class DataFileScan {
 export class CSVFileScan {
   path: string;
   csv: Deno.FsFile | undefined;
-  schema: string[] | undefined;
+  csvHeader: string[] | undefined;
+  tableName: string;
+  schema: columnDefinition[] | undefined;
   reader: ReadableStreamDefaultReader<string[]> | undefined;
 
-  constructor(path: string) {
+  constructor(path: string, tableName: string) {
     this.path = path;
+    this.tableName = tableName;
   }
 
   async next() {
@@ -81,7 +87,15 @@ export class CSVFileScan {
     // use first rowItem for schema
     const result = await this.reader?.read();
     // csv library closes file automatically when reaching the end
-    if (result && !result.done) this.schema = result.value;
+    if (result && !result.done) this.csvHeader = result.value;
+
+    this.schema = await getSchema(this.tableName);
+
+    // check that rows match schema
+    if (!this.csvHeader?.every((h) => this.schema?.find((c) => c.name === h))) {
+      console.log("CSV schema does not match");
+      Deno.exit(1);
+    }
   }
 
   stop() {
@@ -92,10 +106,10 @@ export class CSVFileScan {
   }
 
   zip(values: string[]): row {
-    const schema = this.schema!;
-    return values.reduce((obj, element, i) => {
-      obj[schema[i]] = element;
-      return obj;
+    const schema = this.csvHeader!;
+    return values.reduce((row, element, i) => {
+      row[schema[i]] = element;
+      return row;
     }, {} as row);
   }
 }
@@ -146,6 +160,23 @@ export class ProjectionNode {
     return Object.fromEntries(
       Object.entries(row).filter(([k]) => this.columns.includes(k))
     );
+  }
+}
+
+export class CountNode {
+  child: Nodeq | undefined;
+  done: boolean = false;
+
+  async next(): Promise<row | null> {
+    if (this.child === null) return {};
+    if (this.done) return null;
+
+    let count = 0;
+    while ((await this.child?.next()) !== null) {
+      count++;
+    }
+    this.done = true;
+    return { count: count };
   }
 }
 

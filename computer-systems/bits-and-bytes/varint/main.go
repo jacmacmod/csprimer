@@ -26,7 +26,6 @@ func main() {
 }
 
 func encode(n uint64) []byte {
-
 	var out []byte
 
 	for n > 0 {

@@ -1,1 +1,4 @@
 .DS_Store
+*.data
+*/ml-20m/*.csv
+.zip

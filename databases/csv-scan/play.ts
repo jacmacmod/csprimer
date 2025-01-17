@@ -1,14 +1,26 @@
 import { CsvParseStream } from "@std/csv/parse-stream";
 import { parseArgs } from "jsr:@std/cli/parse-args";
 
-type row = string | number | boolean;
-type Nodeq = CSVFileScan | LimitNode;
+type row = {
+  [key: string]: rowItem;
+};
+
+type rowItem = string | number | boolean;
+
+type selectionFunction = (r: row) => boolean;
+type Nodeq =
+  | CSVFileScan
+  | LimitNode
+  | MemoryScan
+  | ProjectionNode
+  | SelectionNode;
 
 class CSVFileScan {
   path: string;
   csv: Deno.FsFile | undefined;
-  reader: ReadableStreamDefaultReader<Record<string, string>> | undefined;
-  
+  schema: string[] | undefined;
+  reader: ReadableStreamDefaultReader<string[]> | undefined;
+
   constructor(path: string) {
     this.path = path;
   }
@@ -17,31 +29,110 @@ class CSVFileScan {
     if (this.csv === undefined) await this.initializeCsvReader();
 
     const result = await this.reader?.read();
+
     if (result?.done) {
-      this.stop()
+      console.log("File closed.");
+
       return null;
     }
-    return result?.value && Object.values(result.value);
+    return result?.value && this.zip(Object.values(result.value));
   }
 
   async initializeCsvReader() {
     this.csv = await Deno.open(this.path, { read: true });
-
+    console.log("here");
     this.reader = this.csv.readable
       .pipeThrough(new TextDecoderStream())
-      .pipeThrough(
-        new CsvParseStream({
-          skipFirstRow: true,
-        })
-      )
+      .pipeThrough(new CsvParseStream())
       .getReader();
+
+    // use first rowItem for schema
+    const result = await this.reader?.read();
+    // csv library closes file automatically when reaching the end
+    if (result && !result.done) this.schema = result.value;
   }
 
   stop() {
     if (this.csv) this.csv.close();
- 
+
     console.log("File closed.");
     return null;
+  }
+
+  zip(values: string[]): row {
+    const schema = this.schema!;
+    return values.reduce((obj, element, i) => {
+      obj[schema[i]] = element;
+      return obj;
+    }, {} as row);
+  }
+}
+
+class MemoryScan {
+  idx: number;
+  table: rowItem[][];
+  schema: string[][];
+  sorted: boolean = false;
+
+  constructor(table: rowItem[][], schema: string[][]) {
+    this.table = table;
+    this.schema = schema;
+    this.idx = 0;
+  }
+
+  next() {
+    if (this.idx >= this.table.length) {
+      return null;
+    }
+
+    const row = this.zip(this.table[this.idx]);
+    this.idx += 1;
+    return row;
+  }
+
+  zip(values: rowItem[]): row {
+    const schema = this.schema;
+    return values.reduce((obj, element, i) => {
+      obj[schema[i][0]] = element;
+      return obj;
+    }, {} as row);
+  }
+}
+
+class ProjectionNode {
+  child: Nodeq | undefined;
+  columns: string[];
+
+  constructor(colunms: string[]) {
+    this.columns = colunms;
+  }
+
+  async next(): Promise<row | null> {
+    const row = await this.child?.next();
+
+    // console.log(row);
+
+    if (row === null || row === undefined) return null;
+    if (Object.keys(row).length === 0) return {} as row;
+    return Object.fromEntries(Object.entries(row).filter(([k]) => this.columns.includes(k)))
+  }
+}
+
+class SelectionNode {
+  child: Nodeq | undefined;
+  fn: selectionFunction;
+
+  constructor(fn: selectionFunction) {
+    this.fn = fn;
+  }
+
+  async next(): Promise<row | null> {
+    const row = await this.child?.next();;
+    if (row === null || row === undefined) return null;
+    if (Object.keys(row).length === 0) return {} as row;
+    if (this.fn(row)) return row;
+
+    return {} as row;
   }
 }
 
@@ -55,17 +146,17 @@ class LimitNode {
     this.count = 0;
   }
 
-  async next(): Promise<row[] | null> {
+  async next(): Promise<row | null> {
     if (this.count === this.n) {
       if (this.child instanceof CSVFileScan) this.child.stop();
       return null;
     }
-    
+
     const row = await this.child?.next();
     this.count++;
-    
+
     if (row === null || row === undefined) return null;
-    if (row.length === 0) return [];
+    if (Object.keys(row).length === 0) return {} as row;
 
     return row;
   }
@@ -77,7 +168,7 @@ function Q(nodes: Array<Nodeq>): Nodeq {
   let parent: Nodeq = root;
 
   for (const n of ns) {
-    if (parent instanceof LimitNode) {
+    if (!(parent instanceof CSVFileScan) && !(parent instanceof MemoryScan)) {
       parent.child = n;
       parent = n;
     }
@@ -87,11 +178,12 @@ function Q(nodes: Array<Nodeq>): Nodeq {
 
 async function* run(q: Nodeq) {
   while (true) {
-    const x = await q.next();
-    if (Array.isArray(x) && x.length === 0) continue;
-    if (!x) break;
+    const row = await q.next();
+    if (row && typeof row === "object" && Object.keys(row).length === 0)
+      continue;
+    if (!row) break;
 
-    yield await Promise.resolve(x);
+    yield await Promise.resolve(row);
   }
 }
 
@@ -100,17 +192,83 @@ async function main() {
     string: ["csv"],
     default: { csv: "/tmp/ml-20m/movies.csv" },
   });
-  
-  console.log("Wants help?", flags.help);
-  const gen = run(
-    Q([new LimitNode(10), new CSVFileScan(flags.csv)])
-  );
-  
-  for await (const value of gen) {
-    console.log(value);
-  }
 
-  console.log("done");
+  const gen = run(
+    Q([
+      new ProjectionNode(["title", "genres"]),
+      new SelectionNode((row: row) => row["genres"] === "Adventure"),
+      new LimitNode(2000),
+      new CSVFileScan(flags.csv),
+    ])
+  );
+
+  for await (const value of gen) {
+    result.push(value);
+  }
+  
+
+// { title: "Mark of Zorro, The (1940)", genres: "Adventure" }
+// { title: "Macao (1952)", genres: "Adventure" }
+// { title: "Prince Valiant (1997)", genres: "Adventure" }
+
+  // const birds = [
+  //   ["amerob", "American Robin", 0.077, true],
+  //   ["baleag", "Bald Eagle", 4.74, true],
+  //   ["eursta", "European Starling", 0.082, true],
+  //   ["barswa", "Barn Swallow", 0.019, true],
+  //   ["ostric1", "Ostrich", 104.0, false],
+  //   ["emppen1", "Emperor Penguin", 23.0, false],
+  //   ["rufhum", "Rufous Hummingbird", 0.0034, true],
+  //   ["comrav", "Common Raven", 1.2, true],
+  //   ["wanalb", "Wandering Albatross", 8.5, false],
+  //   ["norcar", "Northern Cardinal", 0.045, true],
+  // ];
+
+  // const schema = [
+  //   ["id", "string"],
+  //   ["name", "string"],
+  //   ["weight", "number"],
+  //   ["in_us", "boolean"],
+  // ];
+
+  // const result1: row[][] = [
+  //   ...run(
+  //     Q([
+  //       new ProjectionNode((row: row[]) => [row[1]]),
+  //       new SelectionNode((row: row[]) => row[3] === false),
+  //       new MemoryScan(birds, schema),
+  //     ])
+  //   ),
+  // ];
+
+  // console.assert(
+  //   compareArrays(result1, [
+  //     ["Ostrich"],
+  //     ["Emperor Penguin"],
+  //     ["Wandering Albatross"],
+  //   ])
+  // );
+
+  // const result2: row[][] = [
+  //   ...run(
+  //     Q([
+  //       new ProjectionNode((row: row[]) => [row[0], row[2]]),
+  //       new LimitNode(3),
+  //       new SortNode((row: row[]) => row[2], true),
+  //       new MemoryScan(birds, schema),
+  //     ])
+  //   ),
+  // ];
+
+  // console.assert(
+  //   compareArrays(result2, [
+  //     ["ostric1", 104.0],
+  //     ["emppen1", 23.0],
+  //     ["wanalb", 8.5],
+  //   ])
+  // );
+
+  // console.log("done");
 }
 
 main();
