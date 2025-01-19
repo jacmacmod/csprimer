@@ -10,11 +10,11 @@ type selectionFunction = (r: row) => boolean;
 // type sortFunction = (r: row) => rowItem;
 type Nodeq =
   | CSVFileScan
-  | LimitNode
+  | Limit
   | MemoryScan
-  | ProjectionNode
-  | SelectionNode
-  // | SortNode;
+  | Projection
+  | Selection
+  // | Sort;
 
 class CSVFileScan {
   path: string;
@@ -97,7 +97,7 @@ class MemoryScan {
   }
 }
 
-class ProjectionNode {
+class Projection {
   child: Nodeq | undefined;
   columns: string[];
 
@@ -118,7 +118,7 @@ class ProjectionNode {
   }
 }
 
-class SelectionNode {
+class Selection {
   child: Nodeq | undefined;
   fn: selectionFunction;
 
@@ -140,7 +140,7 @@ class SelectionNode {
   }
 }
 
-class LimitNode {
+class Limit {
   child: Nodeq | undefined;
   n: number;
   count: number;
@@ -172,7 +172,7 @@ function Q(nodes: Array<Nodeq>): Nodeq {
   let parent: Nodeq = root;
 
   for (const n of ns) {
-    if (parent instanceof LimitNode) {
+    if (parent instanceof Limit) {
       parent.child = n;
       parent = n;
     }
@@ -198,9 +198,9 @@ async function main() {
 
   const gen = run(
     Q([
-      // new ProjectionNode(["title"]),
-      // new LimitNode(2),
-      new SelectionNode((row: row) => row["title"] === false),
+      // new Projection(["title"]),
+      // new Limit(2),
+      new Selection((row: row) => row["title"] === false),
       new CSVFileScan(flags.csv),
     ])
   );

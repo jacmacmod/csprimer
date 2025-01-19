@@ -8,9 +8,9 @@ export type Nodeq =
   | MemoryScan
   | CSVFileScan
   | DataFileScan
-  | LimitNode
-  | ProjectionNode
-  | SelectionNode;
+  | Limit
+  | Projection
+  | Selection;
 
 export class DataFileScan {
   path: string;
@@ -129,7 +129,7 @@ export class MemoryScan {
   }
 }
 
-export class ProjectionNode {
+export class Projection {
   child: Nodeq | undefined;
   columns: string[];
 
@@ -149,7 +149,7 @@ export class ProjectionNode {
   }
 }
 
-export class SelectionNode {
+export class Selection {
   child: Nodeq | undefined;
   fn: selectionFunction;
 
@@ -167,7 +167,7 @@ export class SelectionNode {
   }
 }
 
-export class LimitNode {
+export class Limit {
   child: Nodeq | undefined;
   n: number;
   count: number;

@@ -1,5 +1,5 @@
 import { Q, run } from "./util.ts";
-import { CountNode, DataFileScan, LimitNode, SelectionNode } from "./nodes.ts";
+import { Count, DataFileScan, Limit, Selection } from "./nodes.ts";
 import { HeapFile } from "./page.ts";
 import { row } from "./type.ts";
 
@@ -19,11 +19,11 @@ async function main() {
 
   const gen = run(
     Q([
-      // new SelectionNode(
+      // new Selection(
       //   (row) => row["genres"] === "Action" && row["title"] === "Heat",
       // ),
-      // new LimitNode(1),
-      new CountNode(),
+      // new Limit(1),
+      new Count(),
       new DataFileScan("movies.data", 1024),
     ]),
   );

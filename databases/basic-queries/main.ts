@@ -4,11 +4,11 @@ type selectionFunction = (arr: Array<row>) => boolean;
 type sortFunction = (arr: Array<row>) => row;
 type Nodeq =
   | CSVFileScan
-  | LimitNode
+  | Limit
   | MemoryScan
-  | ProjectionNode
-  | SelectionNode
-  | SortNode;
+  | Projection
+  | Selection
+  | Sort;
 
 class MemoryScan {
   idx: number;
@@ -31,7 +31,7 @@ class MemoryScan {
   }
 }
 
-class ProjectionNode {
+class Projection {
   fn: projectionFunction;
   child: Nodeq;
 
@@ -49,7 +49,7 @@ class ProjectionNode {
   }
 }
 
-class SelectionNode {
+class Selection {
   fn: selectionFunction;
   child: Nodeq;
 
@@ -68,7 +68,7 @@ class SelectionNode {
   }
 }
 
-class LimitNode {
+class Limit {
   child: Nodeq;
   n: number;
   count: number;
@@ -90,7 +90,7 @@ class LimitNode {
   }
 }
 
-class SortNode {
+class Sort {
   sortFunc: sortFunction;
   sign: number = 1;
   child: MemoryScan;
@@ -201,8 +201,8 @@ function main() {
   const result1: row[][] = [
     ...run(
       Q([
-        new ProjectionNode((row: row[]) => [row[1]]),
-        new SelectionNode((row: row[]) => row[3] === false),
+        new Projection((row: row[]) => [row[1]]),
+        new Selection((row: row[]) => row[3] === false),
         new MemoryScan(birds),
       ]),
     ),
@@ -219,9 +219,9 @@ function main() {
   const result2: row[][] = [
     ...run(
       Q([
-        new ProjectionNode((row: row[]) => [row[0], row[2]]),
-        new LimitNode(3),
-        new SortNode((row: row[]) => row[2], true),
+        new Projection((row: row[]) => [row[0], row[2]]),
+        new Limit(3),
+        new Sort((row: row[]) => row[2], true),
         new MemoryScan(birds),
       ]),
     ),
@@ -235,8 +235,6 @@ function main() {
     ]),
   );
 
-  const input = Deno.open("/tmp/ml-20m/movies.csv");
-  console.log("done");
 }
 
 main();

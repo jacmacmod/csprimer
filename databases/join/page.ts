@@ -119,17 +119,20 @@ export class HeapFile {
     const fileInfo = await Deno.stat(tableFileLocation);
     
     this.schema = await getSchema(this.table, this.dir);
-    console.assert(fileInfo.size % this.pageSize !== 0);
     let lastPageNumber = fileInfo.size / this.pageSize;
-
+    
     this.file = await Deno.open(tableFileLocation, { read: true, write: true });
-
-    await this.file.seek(-this.pageSize, Deno.SeekMode.End);
+    
     this.buf = new Uint8Array(this.pageSize);
-    await this.file.read(this.buf);
-    await this.file.seek(-this.pageSize, Deno.SeekMode.End);
-
-    while (this.read() !== null) {}
+    
+    if (fileInfo.size !== 0) {
+      console.assert(fileInfo.size % this.pageSize === 0);
+      await this.file.seek(-this.pageSize, Deno.SeekMode.End);
+      await this.file.read(this.buf);
+      await this.file.seek(-this.pageSize, Deno.SeekMode.End);
+  
+      while (this.read() !== null) {} // get to next insertion point
+    }
 
     for (const row of rows) {
       const encodedRow = encodeRow(row, this.schema);

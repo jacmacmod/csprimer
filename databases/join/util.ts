@@ -1,4 +1,3 @@
-import { parseArgs } from "jsr:@std/cli/parse-args";
 import * as path from "jsr:@std/path";
 
 import { CSVFileScan, DataFileScan, MemoryScan, Nodeq } from "./nodes.ts";
@@ -35,6 +34,7 @@ export function Q(nodes: Array<Nodeq>): Nodeq {
 export async function* run(q: Nodeq) {
   while (true) {
     const row = await q.next();
+
     if (row && typeof row === "object" && Object.keys(row).length === 0)
       continue;
     if (!row) break;
@@ -172,12 +172,12 @@ export async function insertCSV(
   tableName: string,
   pageSize: number = defaultPageSize,
   dir: string = defaultTableLocation
-) {
+): Promise<number> {
   console.time(`${tableName} insertion time`);
 
   const columnAttributes = await getSchema(tableName, dir);
   if (columnAttributes.length === 0) Deno.exit(1);
-  
+
   const rows = run(Q([new CSVFileScan(loc, tableName, dir)]));
 
   const tableFileLocation = path.join(dir, `${tableName}.data`);
@@ -206,8 +206,9 @@ export async function insertCSV(
 
   console.log(`inserted ${totalEntries} entries into ${tableName} table`);
   console.timeEnd(`${tableName} insertion time`);
-}
 
+  return totalEntries;
+}
 
 export function encodeRow(row: row, schema: columnDefinition[]): Uint8Array {
   const output = [];

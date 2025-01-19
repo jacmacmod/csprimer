@@ -10,10 +10,10 @@ type rowItem = string | number | boolean;
 type selectionFunction = (r: row) => boolean;
 type Nodeq =
   | CSVFileScan
-  | LimitNode
+  | Limit
   | MemoryScan
-  | ProjectionNode
-  | SelectionNode;
+  | Projection
+  | Selection;
 
 class CSVFileScan {
   path: string;
@@ -99,7 +99,7 @@ class MemoryScan {
   }
 }
 
-class ProjectionNode {
+class Projection {
   child: Nodeq | undefined;
   columns: string[];
 
@@ -118,7 +118,7 @@ class ProjectionNode {
   }
 }
 
-class SelectionNode {
+class Selection {
   child: Nodeq | undefined;
   fn: selectionFunction;
 
@@ -136,7 +136,7 @@ class SelectionNode {
   }
 }
 
-class LimitNode {
+class Limit {
   child: Nodeq | undefined;
   n: number;
   count: number;
@@ -195,9 +195,9 @@ async function main() {
 
   const gen = run(
     Q([
-      new ProjectionNode(["title", "genres"]),
-      new SelectionNode((row: row) => row["genres"] === "Adventure"),
-      new LimitNode(2000),
+      new Projection(["title", "genres"]),
+      new Selection((row: row) => row["genres"] === "Adventure"),
+      new Limit(2000),
       new CSVFileScan(flags.csv),
     ])
   );
@@ -234,8 +234,8 @@ async function main() {
   // const result1: row[][] = [
   //   ...run(
   //     Q([
-  //       new ProjectionNode((row: row[]) => [row[1]]),
-  //       new SelectionNode((row: row[]) => row[3] === false),
+  //       new Projection((row: row[]) => [row[1]]),
+  //       new Selection((row: row[]) => row[3] === false),
   //       new MemoryScan(birds, schema),
   //     ])
   //   ),
@@ -252,9 +252,9 @@ async function main() {
   // const result2: row[][] = [
   //   ...run(
   //     Q([
-  //       new ProjectionNode((row: row[]) => [row[0], row[2]]),
-  //       new LimitNode(3),
-  //       new SortNode((row: row[]) => row[2], true),
+  //       new Projection((row: row[]) => [row[0], row[2]]),
+  //       new Limit(3),
+  //       new Sort((row: row[]) => row[2], true),
   //       new MemoryScan(birds, schema),
   //     ])
   //   ),

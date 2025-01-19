@@ -1,20 +1,21 @@
 import { CsvParseStream } from "jsr:@std/csv";
-import * as path from "jsr:@std/path";
 import { row, rowItem } from "./type.ts";
 import { defaultPageSize, defaultTableLocation, HeapFile } from "./page.ts";
 import { columnDefinition, getSchema } from "./util.ts";
 
 export type selectionFunction = (r: row) => boolean;
+export type projectionFunction = (r: row) => row;
 
 export type Nodeq =
   | NestedLoopJoin
+  | Sort
   | MemoryScan
   | CSVFileScan
   | DataFileScan
-  | LimitNode
-  | ProjectionNode
-  | CountNode
-  | SelectionNode;
+  | Limit
+  | Projection
+  | Count
+  | Selection;
 
 export class NestedLoopJoin {
   table: string;
@@ -174,10 +175,10 @@ export class CSVFileScan {
 export class MemoryScan {
   idx: number;
   table: rowItem[][];
-  schema: string[][];
+  schema: columnDefinition[] = [];
   sorted: boolean = false;
 
-  constructor(table: rowItem[][], schema: string[][]) {
+  constructor(table: rowItem[][], schema: columnDefinition[]) {
     this.table = table;
     this.schema = schema;
     this.idx = 0;
@@ -188,39 +189,41 @@ export class MemoryScan {
 
     const row = this.zip(this.table[this.idx]);
     this.idx += 1;
+
     return row;
   }
 
   zip(values: rowItem[]): row {
     const schema = this.schema;
-    return values.reduce((obj, element, i) => {
-      obj[schema[i][0]] = element;
-      return obj;
+
+    return values.reduce((row: row, col, i) => {
+      const colDefinition: columnDefinition = schema[i];
+      row[colDefinition.name] = col;
+      return row;
     }, {} as row);
   }
 }
 
-export class ProjectionNode {
+export class Projection {
   child: Nodeq | undefined;
-  columns: string[];
+  fn: projectionFunction | undefined;
 
-  constructor(colunms: string[]) {
-    this.columns = colunms;
+  constructor(fn: projectionFunction) {
+    this.fn = fn
   }
 
   async next(): Promise<row | null> {
     const row = await this.child?.next();
+    if (!this.fn) Deno.exit(1);
 
     if (row === null || row === undefined) return null;
     if (Object.keys(row).length === 0) return {} as row;
 
-    return Object.fromEntries(
-      Object.entries(row).filter(([k]) => this.columns.includes(k))
-    );
+    return this.fn(row)
   }
 }
 
-export class CountNode {
+export class Count {
   child: Nodeq | undefined;
   done: boolean = false;
 
@@ -237,7 +240,7 @@ export class CountNode {
   }
 }
 
-export class SelectionNode {
+export class Selection {
   child: Nodeq | undefined;
   fn: selectionFunction;
 
@@ -249,13 +252,14 @@ export class SelectionNode {
     const row = await this.child?.next();
     if (row === null || row === undefined) return null;
     if (Object.keys(row).length === 0) return {} as row;
+
     if (this.fn(row)) return row;
 
     return {} as row;
   }
 }
 
-export class LimitNode {
+export class Limit {
   child: Nodeq | undefined;
   n: number;
   count: number;
@@ -283,5 +287,53 @@ export class LimitNode {
     if (Object.keys(row).length === 0) return {} as row;
 
     return row;
+  }
+}
+
+
+export class Sort {
+  colName: string
+  sign: number = 1;
+  child: Nodeq | undefined;
+  sortedRows: row[] = [];
+  idx: number = 0;
+
+  constructor(colName: string, desc: boolean = false) {
+    this.colName = colName;
+    this.sign = desc ? 1 : -1;
+  }
+
+  async next() {
+    if (this.idx === 0) await this.readAll();
+    if (this.idx >= this.sortedRows.length) return null;
+
+    const r = this.sortedRows[this.idx];
+    this.idx++;
+
+    return r;
+  }
+
+  private async readAll() {
+    this.sortedRows = [];
+
+    let r;
+    while ((r = await this.child?.next()) !== null) {
+      if (!r) break;
+      this.sortedRows.push(r);
+    }
+    
+    this.sort();
+
+  }
+
+  private sort() {
+    this.sortedRows.sort((a, b) => {
+      const fieldA = a[this.colName]
+      const fieldB = b[this.colName]
+
+      if (fieldA < fieldB) return this.sign * 1;
+      if (fieldA > fieldB) return this.sign * -1;
+      return 0;
+    });
   }
 }
