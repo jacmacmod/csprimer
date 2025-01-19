@@ -1,13 +1,15 @@
 import { Q, run } from "./util.ts";
-import { DataFileScan, LimitNode } from "./nodes.ts";
+import { DataFileScan, LimitNode, NestedLoopJoin, CountNode } from "./nodes.ts";
 
 async function main() {
   
   const gen = run(
     Q([
       // new SelectionNode((row) => row["genres"] === "Adventure"),
-      new LimitNode(5),
-      new DataFileScan("tags", 1024),
+      new CountNode(),
+      new LimitNode(3),
+      new NestedLoopJoin("links"),
+      new DataFileScan("movies"),
     ])
   );
   

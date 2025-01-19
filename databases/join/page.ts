@@ -8,8 +8,10 @@ import {
 } from "./util.ts";
 
 import { row } from "./type.ts";
+import * as path from "jsr:@std/path";
 
 export const defaultPageSize = 1024;
+export const defaultTableLocation = "tables";
 
 export class Page {
   id: number;
@@ -67,19 +69,27 @@ export class HeapFile {
   file: Deno.FsFile | undefined = undefined;
   buf: Uint8Array = new Uint8Array();
   done: boolean = false;
-  lowerIdx: number = 6;
-  prevOffset: number = defaultPageSize;
+  upperOffset: number = 6;
+  lowerOffset: number = defaultPageSize;
   currentPage: number = 1;
   schema: columnDefinition[] | undefined;
+  dir: string = defaultTableLocation;
 
-  constructor(table: string, pageSize: number) {
+  constructor(
+    table: string,
+    pageSize: number,
+    dir: string = defaultTableLocation
+  ) {
     this.table = table;
     this.pageSize = pageSize;
+    this.dir = dir;
   }
 
   async load() {
-    this.schema = await getSchema(this.table);
-    this.file = await Deno.open(`tables/${this.table}.data`, { read: true });
+    this.schema = await getSchema(this.table, this.dir);
+    this.file = await Deno.open(path.join(this.dir, `${this.table}.data`), {
+      read: true,
+    });
     this.buf = new Uint8Array(this.pageSize);
 
     const numberOfBytesRead = await this.file.read(this.buf);
@@ -91,29 +101,28 @@ export class HeapFile {
   }
 
   read() {
-    const offsetBytes = this.buf.slice(this.lowerIdx, this.lowerIdx + 2);
+    const offsetBytes = this.buf.slice(this.upperOffset, this.upperOffset + 2);
     const offset = decodeUint16(offsetBytes);
-    const rowBytes = this.buf.slice(offset, this.prevOffset);
+    const rowBytes = this.buf.slice(offset, this.lowerOffset);
     const row = decodeRow(rowBytes, this.schema!);
 
     if (offset === 0) return null;
 
-    this.lowerIdx += 2; // Move to the next offset
-    this.prevOffset = offset;
+    this.upperOffset += 2; // Move to the next offset
+    this.lowerOffset = offset;
 
     return row;
   }
 
   async insert(rows: row[]) {
-    const fileInfo = await Deno.stat(`${this.table}.data`);
-    this.schema = await getSchema(this.table);
+    const tableFileLocation = path.join(this.dir, `${this.table}.data`);
+    const fileInfo = await Deno.stat(tableFileLocation);
+    
+    this.schema = await getSchema(this.table, this.dir);
     console.assert(fileInfo.size % this.pageSize !== 0);
     let lastPageNumber = fileInfo.size / this.pageSize;
 
-    this.file = await Deno.open(`tables/${this.table}.data`, {
-      read: true,
-      write: true,
-    });
+    this.file = await Deno.open(tableFileLocation, { read: true, write: true });
 
     await this.file.seek(-this.pageSize, Deno.SeekMode.End);
     this.buf = new Uint8Array(this.pageSize);
@@ -124,22 +133,22 @@ export class HeapFile {
 
     for (const row of rows) {
       const encodedRow = encodeRow(row, this.schema);
-      if (this.prevOffset - this.lowerIdx < encodedRow.length + 6) {
+      if (this.lowerOffset - this.upperOffset < encodedRow.length + 6) {
         this.file.write(this.buf);
 
         this.buf = new Uint8Array(this.pageSize);
-        this.lowerIdx = 6;
-        this.prevOffset = this.pageSize;
+        this.upperOffset = 6;
+        this.lowerOffset = this.pageSize;
         this.buf.set(encodeUint16(lastPageNumber));
         lastPageNumber++;
       }
 
-      const offset = this.prevOffset - encodedRow.length;
-      this.buf.set(encodeUint16(offset), this.lowerIdx);
+      const offset = this.lowerOffset - encodedRow.length;
+      this.buf.set(encodeUint16(offset), this.upperOffset);
       this.buf.set(encodedRow, offset);
 
-      this.lowerIdx += 2;
-      this.prevOffset = offset;
+      this.upperOffset += 2;
+      this.lowerOffset = offset;
     }
     this.file.write(this.buf);
     this.file.close();
@@ -158,8 +167,8 @@ export class HeapFile {
       return null;
     }
 
-    this.lowerIdx = 6;
-    this.prevOffset = this.pageSize;
+    this.upperOffset = 6;
+    this.lowerOffset = this.pageSize;
     this.currentPage++;
     return this.currentPage;
   }

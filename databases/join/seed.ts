@@ -95,7 +95,7 @@ async function main() {
     },
   ];
 
-  console.time("seed");
+  console.time("Seeding movielens data");
 
   await Promise.all([
     createTable("movies", movieColumns),

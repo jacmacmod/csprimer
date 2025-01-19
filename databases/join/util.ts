@@ -1,7 +1,9 @@
-import { parseArgs } from "@std/cli/parse-args";
+import { parseArgs } from "jsr:@std/cli/parse-args";
+import * as path from "jsr:@std/path";
+
 import { CSVFileScan, DataFileScan, MemoryScan, Nodeq } from "./nodes.ts";
 import { row } from "./type.ts";
-import { defaultPageSize, Page } from "./page.ts";
+import { defaultPageSize, defaultTableLocation, Page } from "./page.ts";
 
 type columnType = "int" | "text" | "float32" | "float64";
 
@@ -41,9 +43,13 @@ export async function* run(q: Nodeq) {
   }
 }
 
-export async function getSchema(table: string): Promise<columnDefinition[]> {
+export async function getSchema(
+  table: string,
+  dir: string = defaultTableLocation
+): Promise<columnDefinition[]> {
   const result: columnDefinition[] = [];
-  const data = await Deno.readFile(`tables/${table}_schema.data`);
+
+  const data = await Deno.readFile(path.join(dir, `${table}_schema.data`));
   let bytesRead = 0;
   const decoder = new TextDecoder();
 
@@ -82,8 +88,12 @@ export async function getSchema(table: string): Promise<columnDefinition[]> {
   return result;
 }
 
-export async function createTable(name: string, columns: columnDefinition[]) {
-  const file = await Deno.create(`${name}_schema.data`);
+export async function createTable(
+  name: string,
+  columns: columnDefinition[],
+  dir: string = defaultTableLocation
+) {
+  const file = await Deno.create(path.join(dir, `${name}_schema.data`));
 
   const output = [];
   let size = 0;
@@ -141,10 +151,7 @@ export async function createTable(name: string, columns: columnDefinition[]) {
     }
     size += totalBytes;
     output.push(buf.slice(0, totalBytes));
-
-    await Deno.create(`${name}.data`);
   }
-
   const result = new Uint8Array(size);
   let offset = 0;
 
@@ -155,25 +162,26 @@ export async function createTable(name: string, columns: columnDefinition[]) {
 
   await file.write(result);
   file.close();
-  
+  await Deno.create(path.join(dir, `${name}.data`)).then((f) => f.close());
+
   console.log(`created ${name} table`);
 }
 
 export async function insertCSV(
-  path: string = "../ml-20m/movies.csv",
+  loc: string,
   tableName: string,
-  pageSize: number = defaultPageSize
+  pageSize: number = defaultPageSize,
+  dir: string = defaultTableLocation
 ) {
-  console.time(`${tableName} insertion time`)
-  const flags = parseArgs(Deno.args, {
-    string: ["csv"],
-    default: { csv: path },
-  });
+  console.time(`${tableName} insertion time`);
 
-  const rows = run(Q([new CSVFileScan(flags.csv, tableName)]));
-  const columnAttributes = await getSchema(tableName);
+  const columnAttributes = await getSchema(tableName, dir);
+  if (columnAttributes.length === 0) Deno.exit(1);
+  
+  const rows = run(Q([new CSVFileScan(loc, tableName, dir)]));
 
-  const file = await Deno.open(`tables/${tableName}.data`, { write: true });
+  const tableFileLocation = path.join(dir, `${tableName}.data`);
+  const file = await Deno.open(tableFileLocation, { write: true });
   const writer = file.writable.getWriter();
 
   let pageNumber: number = 1;
@@ -195,50 +203,11 @@ export async function insertCSV(
 
   await writer.write(page.createBuffer());
   await writer.close();
-  
+
   console.log(`inserted ${totalEntries} entries into ${tableName} table`);
-  console.timeEnd(`${tableName} insertion time`)
+  console.timeEnd(`${tableName} insertion time`);
 }
 
-export async function readHeapFileALL(
-  table: string = "movies",
-  pageSize: number = defaultPageSize
-) {
-  const file = await Deno.open(`tables/${table}.data`, { read: true });
-  const buf = new Uint8Array(pageSize);
-  const columnAttributes = await getSchema(table);
-
-  try {
-    let bytesRead: number | null;
-
-    while ((bytesRead = await file.read(buf)) !== null) {
-      if (bytesRead > 0) {
-        let x = 6; // Start offset for data within the page
-        let max = buf.length;
-
-        while (true) {
-          const curr = decodeUint16(buf.slice(x, x + 2));
-
-          if (curr === 0) {
-            break;
-          }
-
-          const row = decodeRow(buf.slice(curr, max), columnAttributes);
-
-          if (!row || row.movieId === "NaN") {
-            console.error("Invalid row data, terminating...");
-            return;
-          }
-
-          x += 2; // Move to the next offset
-          max = curr;
-        }
-      }
-    }
-  } finally {
-    file.close();
-  }
-}
 
 export function encodeRow(row: row, schema: columnDefinition[]): Uint8Array {
   const output = [];
@@ -310,13 +279,13 @@ export function decodeRow(arr: Uint8Array, schema: columnDefinition[]): row {
         break;
       }
       case "float32": {
-        const float32Column = decodeFloat32(arr.slice(offset, offset + 4))
+        const float32Column = decodeFloat32(arr.slice(offset, offset + 4));
         row[col.name] = float32Column;
         offset += 4;
         break;
       }
       case "float64": {
-        const float64Column = decodeFloat64(arr.slice(offset, offset + 8))
+        const float64Column = decodeFloat64(arr.slice(offset, offset + 8));
         row[col.name] = float64Column;
         offset += 8;
         break;
@@ -336,6 +305,7 @@ function encodeString(str: string): Uint8Array {
   }
   const textEncoder = new TextEncoder();
   const encoded = textEncoder.encode(str);
+
   return new Uint8Array([encoded.length, ...encoded]);
 }
 
@@ -343,6 +313,7 @@ function decodeString(arr: Uint8Array, offset: number): string {
   const decoder = new TextDecoder();
   const startIdx = offset + 1;
   const textBytes = arr.slice(startIdx, startIdx + arr[offset]);
+
   return decoder.decode(textBytes);
 }
 

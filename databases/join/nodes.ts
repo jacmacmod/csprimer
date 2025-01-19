@@ -1,11 +1,13 @@
-import { CsvParseStream } from "@std/csv/parse-stream";
+import { CsvParseStream } from "jsr:@std/csv";
+import * as path from "jsr:@std/path";
 import { row, rowItem } from "./type.ts";
-import { HeapFile } from "./page.ts";
+import { defaultPageSize, defaultTableLocation, HeapFile } from "./page.ts";
 import { columnDefinition, getSchema } from "./util.ts";
 
 export type selectionFunction = (r: row) => boolean;
 
 export type Nodeq =
+  | NestedLoopJoin
   | MemoryScan
   | CSVFileScan
   | DataFileScan
@@ -14,14 +16,62 @@ export type Nodeq =
   | CountNode
   | SelectionNode;
 
+export class NestedLoopJoin {
+  table: string;
+  pageSize = defaultPageSize;
+  child: Nodeq | undefined;
+  scanNode: DataFileScan | undefined;
+  // heapFile: HeapFile | undefined;
+
+  constructor(table: string) {
+    this.table = table;
+  }
+
+  async next(): Promise<row | null> {
+    if (this.child === null) return {};
+
+    const subRow = await this.child?.next();
+    if (subRow === null || subRow === undefined) return null;
+    if (Object.keys(subRow).length === 0) return {} as row;
+
+    if (!this.scanNode) await this.load();
+    if (!this.scanNode) Deno.exit(1);
+    const row: row | null = await this.scanNode.next();
+
+    if (row) {
+      return { ...row, ...subRow };
+    } else {
+      return null;
+    }
+  }
+
+  async load() {
+    this.scanNode = new DataFileScan(this.table, this.pageSize);
+    if (!this.scanNode) Deno.exit(1);
+    await this.scanNode.load();
+  }
+
+  stop() {
+    if (this.scanNode) this.scanNode.stop();
+    console.log("File closed.");
+
+    return null;
+  }
+}
 export class DataFileScan {
   table: string;
   pageSize: number;
   heapFile: HeapFile | undefined;
+  dir: string = defaultTableLocation;
 
-  constructor(path: string, pageSize: number) {
+  constructor(
+    path: string,
+    pageSize: number = defaultPageSize,
+    dir: string = defaultTableLocation
+  ) {
     this.table = path;
     this.pageSize = pageSize;
+    this.dir = dir;
   }
 
   async next() {
@@ -38,7 +88,8 @@ export class DataFileScan {
   }
 
   async load() {
-    this.heapFile = new HeapFile(this.table, this.pageSize);
+    this.heapFile = new HeapFile(this.table, this.pageSize, this.dir);
+
     await this.heapFile.load();
   }
 
@@ -51,16 +102,22 @@ export class DataFileScan {
 }
 
 export class CSVFileScan {
-  path: string;
+  fileName: string;
   csv: Deno.FsFile | undefined;
   csvHeader: string[] | undefined;
   tableName: string;
   schema: columnDefinition[] | undefined;
   reader: ReadableStreamDefaultReader<string[]> | undefined;
+  dir: string = defaultTableLocation;
 
-  constructor(path: string, tableName: string) {
-    this.path = path;
+  constructor(
+    fileName: string,
+    tableName: string,
+    dir: string = defaultTableLocation
+  ) {
+    this.fileName = fileName;
     this.tableName = tableName;
+    this.dir = dir;
   }
 
   async next() {
@@ -77,7 +134,7 @@ export class CSVFileScan {
   }
 
   async initializeCsvReader() {
-    this.csv = await Deno.open(this.path, { read: true });
+    this.csv = await Deno.open(this.fileName, { read: true });
 
     this.reader = this.csv.readable
       .pipeThrough(new TextDecoderStream())
@@ -89,7 +146,7 @@ export class CSVFileScan {
     // csv library closes file automatically when reaching the end
     if (result && !result.done) this.csvHeader = result.value;
 
-    this.schema = await getSchema(this.tableName);
+    this.schema = await getSchema(this.tableName, this.dir);
 
     // check that rows match schema
     if (!this.csvHeader?.every((h) => this.schema?.find((c) => c.name === h))) {
