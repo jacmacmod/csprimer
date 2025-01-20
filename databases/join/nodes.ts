@@ -1,11 +1,12 @@
 import { CsvParseStream } from "jsr:@std/csv";
-import { row, rowItem } from "./type.ts";
+import { rowItem } from "./type.ts";
 import { defaultPageSize, defaultTableLocation, HeapFile } from "./page.ts";
 import { columnDefinition, getSchema } from "./util.ts";
 
-export type selectionFunction = (r: row) => boolean;
-export type projectionFunction = (r: row) => row;
-
+// export type selectionFunction = (r: row) => boolean;
+// export type projectionFunction = (r: row) => row;
+export type selectionFunction = (r: rowItem[]) => boolean;
+export type projectionFunction = (r: rowItem[]) => rowItem[];
 export type Nodeq =
   | NestedLoopJoin
   | Sort
@@ -17,48 +18,48 @@ export type Nodeq =
   | Count
   | Selection;
 
-export class NestedLoopJoin {
-  table: string;
-  pageSize = defaultPageSize;
-  child: Nodeq | undefined;
-  scanNode: DataFileScan | undefined;
-  // heapFile: HeapFile | undefined;
+// export class NestedLoopJoin {
+//   table: string;
+//   pageSize = defaultPageSize;
+//   child: Nodeq | undefined;
+//   scanNode: DataFileScan | undefined;
+//   // heapFile: HeapFile | undefined;
 
-  constructor(table: string) {
-    this.table = table;
-  }
+//   constructor(table: string) {
+//     this.table = table;
+//   }
 
-  async next(): Promise<row | null> {
-    if (this.child === null) return {};
+//   async next(): Promise<row | null> {
+//     if (this.child === null) return {};
 
-    const subRow = await this.child?.next();
-    if (subRow === null || subRow === undefined) return null;
-    if (Object.keys(subRow).length === 0) return {} as row;
+//     const subRow = await this.child?.next();
+//     if (subRow === null || subRow === undefined) return null;
+//     if (Object.keys(subRow).length === 0) return {} as row;
 
-    if (!this.scanNode) await this.load();
-    if (!this.scanNode) Deno.exit(1);
-    const row: row | null = await this.scanNode.next();
+//     if (!this.scanNode) await this.load();
+//     if (!this.scanNode) Deno.exit(1);
+//     const row: row | null = await this.scanNode.next();
 
-    if (row) {
-      return { ...row, ...subRow };
-    } else {
-      return null;
-    }
-  }
+//     if (row) {
+//       return { ...row, ...subRow };
+//     } else {
+//       return null;
+//     }
+//   }
 
-  async load() {
-    this.scanNode = new DataFileScan(this.table, this.pageSize);
-    if (!this.scanNode) Deno.exit(1);
-    await this.scanNode.load();
-  }
+//   async load() {
+//     this.scanNode = new DataFileScan(this.table, this.pageSize);
+//     if (!this.scanNode) Deno.exit(1);
+//     await this.scanNode.load();
+//   }
 
-  stop() {
-    if (this.scanNode) this.scanNode.stop();
-    console.log("File closed.");
+//   stop() {
+//     if (this.scanNode) this.scanNode.stop();
+//     console.log("File closed.");
 
-    return null;
-  }
-}
+//     return null;
+//   }
+// }
 export class DataFileScan {
   table: string;
   pageSize: number;
@@ -79,7 +80,7 @@ export class DataFileScan {
     if (!this.heapFile) await this.load();
     if (!this.heapFile) Deno.exit(1);
 
-    const result: row | null = this.heapFile.read();
+    const result = this.heapFile.read();
 
     if (result) return result;
     const page = await this.heapFile.nextPage();
@@ -131,7 +132,7 @@ export class CSVFileScan {
       return null;
     }
 
-    return result?.value && this.zip(Object.values(result.value));
+    return result?.value;
   }
 
   async initializeCsvReader() {
@@ -162,16 +163,42 @@ export class CSVFileScan {
     console.log("File closed.");
     return null;
   }
-
-  zip(values: string[]): row {
-    const schema = this.csvHeader!;
-    return values.reduce((row, element, i) => {
-      row[schema[i]] = element;
-      return row;
-    }, {} as row);
-  }
 }
 
+export class NestedLoopJoin {
+  left: MemoryScan;
+  right: MemoryScan;
+  leftRow: rowItem[] | null = null;
+  child: Nodeq | undefined;
+  rightDone: boolean = false;
+
+  constructor(left: MemoryScan, right: MemoryScan) {
+    this.left = left;
+    this.right = right;
+
+    if (!this.left) Deno.exit(1);
+    if (!this.right) Deno.exit(1);
+  }
+
+  next() {
+    if (this.left.table.length === 0 || this.right.table.length === 0)
+      return null;
+    if (!this.leftRow) {
+      this.leftRow = this.left.next();
+      if (!this.leftRow) return null;
+    }
+
+    const rightRow = this.right.next();
+    if (!rightRow) {
+      this.rightDone = true;
+      this.right.reset();
+      this.leftRow = this.left.next();
+    } else {
+      return [...this.leftRow, ...rightRow];
+    }
+    return null;
+  }
+}
 export class MemoryScan {
   idx: number;
   table: rowItem[][];
@@ -187,20 +214,14 @@ export class MemoryScan {
   next() {
     if (this.idx >= this.table.length) return null;
 
-    const row = this.zip(this.table[this.idx]);
+    const row = this.table[this.idx];
     this.idx += 1;
 
     return row;
   }
 
-  zip(values: rowItem[]): row {
-    const schema = this.schema;
-
-    return values.reduce((row: row, col, i) => {
-      const colDefinition: columnDefinition = schema[i];
-      row[colDefinition.name] = col;
-      return row;
-    }, {} as row);
+  reset() {
+    this.idx = 0;
   }
 }
 
@@ -209,17 +230,17 @@ export class Projection {
   fn: projectionFunction | undefined;
 
   constructor(fn: projectionFunction) {
-    this.fn = fn
+    this.fn = fn;
   }
 
-  async next(): Promise<row | null> {
-    const row = await this.child?.next();
+  async next(): Promise<rowItem[] | null> {
     if (!this.fn) Deno.exit(1);
+    const row = await this.child?.next();
 
-    if (row === null || row === undefined) return null;
-    if (Object.keys(row).length === 0) return {} as row;
+    if (!row) return null;
+    if (row.length === 0) return [];
 
-    return this.fn(row)
+    return this.fn(row);
   }
 }
 
@@ -227,8 +248,8 @@ export class Count {
   child: Nodeq | undefined;
   done: boolean = false;
 
-  async next(): Promise<row | null> {
-    if (this.child === null) return {};
+  async next(): Promise<rowItem[] | null> {
+    if (this.child === null) return [];
     if (this.done) return null;
 
     let count = 0;
@@ -236,7 +257,8 @@ export class Count {
       count++;
     }
     this.done = true;
-    return { count: count };
+
+    return [count];
   }
 }
 
@@ -248,14 +270,14 @@ export class Selection {
     this.fn = fn;
   }
 
-  async next(): Promise<row | null> {
+  async next(): Promise<rowItem[] | null> {
     const row = await this.child?.next();
-    if (row === null || row === undefined) return null;
-    if (Object.keys(row).length === 0) return {} as row;
 
+    if (!row) return null;
+    if (row.length === 0) return [];
     if (this.fn(row)) return row;
 
-    return {} as row;
+    return [];
   }
 }
 
@@ -269,7 +291,7 @@ export class Limit {
     this.count = 0;
   }
 
-  async next(): Promise<row | null> {
+  async next(): Promise<rowItem[] | null> {
     if (this.count === this.n) {
       if (
         this.child instanceof CSVFileScan ||
@@ -283,23 +305,22 @@ export class Limit {
     const row = await this.child?.next();
     this.count++;
 
-    if (row === null || row === undefined) return null;
-    if (Object.keys(row).length === 0) return {} as row;
+    if (!row) return null;
+    if (row.length === 0) return [];
 
     return row;
   }
 }
 
-
 export class Sort {
-  colName: string
+  colIdx: number = 0;
   sign: number = 1;
   child: Nodeq | undefined;
-  sortedRows: row[] = [];
+  sortedRows: rowItem[][] = [];
   idx: number = 0;
 
-  constructor(colName: string, desc: boolean = false) {
-    this.colName = colName;
+  constructor(colIdx: number, desc: boolean = false) {
+    this.colIdx = colIdx;
     this.sign = desc ? 1 : -1;
   }
 
@@ -321,15 +342,14 @@ export class Sort {
       if (!r) break;
       this.sortedRows.push(r);
     }
-    
-    this.sort();
 
+    this.sort();
   }
 
   private sort() {
     this.sortedRows.sort((a, b) => {
-      const fieldA = a[this.colName]
-      const fieldB = b[this.colName]
+      const fieldA = a[this.colIdx];
+      const fieldB = b[this.colIdx];
 
       if (fieldA < fieldB) return this.sign * 1;
       if (fieldA > fieldB) return this.sign * -1;

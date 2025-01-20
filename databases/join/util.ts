@@ -1,8 +1,9 @@
 import * as path from "jsr:@std/path";
 
 import { CSVFileScan, DataFileScan, MemoryScan, Nodeq } from "./nodes.ts";
-import { row } from "./type.ts";
+import { rowItem } from "./type.ts";
 import { defaultPageSize, defaultTableLocation, Page } from "./page.ts";
+import { NestedLoopJoin } from "./nodes.ts";
 
 type columnType = "int" | "text" | "float32" | "float64";
 
@@ -22,6 +23,7 @@ export function Q(nodes: Array<Nodeq>): Nodeq {
     if (
       !(parent instanceof CSVFileScan) &&
       !(parent instanceof MemoryScan) &&
+      !(parent instanceof NestedLoopJoin) &&
       !(parent instanceof DataFileScan)
     ) {
       parent.child = n;
@@ -35,8 +37,8 @@ export async function* run(q: Nodeq) {
   while (true) {
     const row = await q.next();
 
-    if (row && typeof row === "object" && Object.keys(row).length === 0)
-      continue;
+    // if (row && typeof row === "object" && Object.keys(row).length === 0)
+    if (row && row.length === 0) continue;
     if (!row) break;
 
     yield await Promise.resolve(row);
@@ -210,15 +212,18 @@ export async function insertCSV(
   return totalEntries;
 }
 
-export function encodeRow(row: row, schema: columnDefinition[]): Uint8Array {
+export function encodeRow(
+  row: rowItem[],
+  schema: columnDefinition[]
+): Uint8Array {
   const output = [];
   let size = 0;
 
-  for (const col of schema) {
-    const value = row[col.name];
+  for (let i = 0; i < schema.length; i++) {
+    const [value, type] = [row[i], schema[i].type];
     let encodedColumn: Uint8Array;
 
-    switch (col.type) {
+    switch (type) {
       case "int":
         encodedColumn = encodeUint32(Number(value));
         break;
@@ -235,7 +240,7 @@ export function encodeRow(row: row, schema: columnDefinition[]): Uint8Array {
           Deno.exit(1);
         }
         encodedColumn =
-          col.type === "float32"
+          type === "float32"
             ? encodeFloat32(parsedValue)
             : encodeFloat64(parsedValue);
 
@@ -261,33 +266,36 @@ export function encodeRow(row: row, schema: columnDefinition[]): Uint8Array {
   return result;
 }
 
-export function decodeRow(arr: Uint8Array, schema: columnDefinition[]): row {
-  const row: row = {};
+export function decodeRow(
+  arr: Uint8Array,
+  schema: columnDefinition[]
+): rowItem[] {
+  const row: rowItem[] = [];
   let offset = 0;
 
-  for (const col of schema) {
-    switch (col.type) {
+  for (let i = 0; i < schema.length; i++) {
+    switch (schema[i].type) {
       case "int": {
         const intColumn = decodeUint32(arr.slice(offset, offset + 4));
-        row[col.name] = intColumn;
+        row.push(intColumn);
         offset += 4;
         break;
       }
       case "text": {
         const textColumn = decodeString(arr, offset);
         offset += arr[offset] + 1;
-        row[col.name] = textColumn;
+        row.push(textColumn);
         break;
       }
       case "float32": {
         const float32Column = decodeFloat32(arr.slice(offset, offset + 4));
-        row[col.name] = float32Column;
+        row.push(float32Column);
         offset += 4;
         break;
       }
       case "float64": {
         const float64Column = decodeFloat64(arr.slice(offset, offset + 8));
-        row[col.name] = float64Column;
+        row.push(float64Column);
         offset += 8;
         break;
       }

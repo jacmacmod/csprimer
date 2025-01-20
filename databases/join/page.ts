@@ -1,3 +1,4 @@
+import { rowItem } from "./type.ts";
 import {
   columnDefinition,
   decodeRow,
@@ -7,7 +8,6 @@ import {
   encodeUint16,
 } from "./util.ts";
 
-import { row } from "./type.ts";
 import * as path from "jsr:@std/path";
 
 export const defaultPageSize = 1024;
@@ -83,6 +83,7 @@ export class HeapFile {
     this.table = table;
     this.pageSize = pageSize;
     this.dir = dir;
+    this.buf = new Uint8Array(this.pageSize);
   }
 
   async load() {
@@ -90,7 +91,6 @@ export class HeapFile {
     this.file = await Deno.open(path.join(this.dir, `${this.table}.data`), {
       read: true,
     });
-    this.buf = new Uint8Array(this.pageSize);
 
     const numberOfBytesRead = await this.file.read(this.buf);
     if (numberOfBytesRead === null || numberOfBytesRead === 0) {
@@ -114,23 +114,21 @@ export class HeapFile {
     return row;
   }
 
-  async insert(rows: row[]) {
+  async insert(rows: rowItem[][]) {
     const tableFileLocation = path.join(this.dir, `${this.table}.data`);
     const fileInfo = await Deno.stat(tableFileLocation);
-    
+
     this.schema = await getSchema(this.table, this.dir);
     let lastPageNumber = fileInfo.size / this.pageSize;
-    
+
     this.file = await Deno.open(tableFileLocation, { read: true, write: true });
-    
-    this.buf = new Uint8Array(this.pageSize);
-    
+
     if (fileInfo.size !== 0) {
       console.assert(fileInfo.size % this.pageSize === 0);
       await this.file.seek(-this.pageSize, Deno.SeekMode.End);
       await this.file.read(this.buf);
       await this.file.seek(-this.pageSize, Deno.SeekMode.End);
-  
+
       while (this.read() !== null) {} // get to next insertion point
     }
 
