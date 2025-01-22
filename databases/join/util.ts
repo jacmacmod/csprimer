@@ -24,7 +24,8 @@ export function Q(nodes: Array<Nodeq>): Nodeq {
       !(parent instanceof CSVFileScan) &&
       !(parent instanceof MemoryScan) &&
       !(parent instanceof NestedLoopJoin) &&
-      !(parent instanceof DataFileScan)
+      !(parent instanceof DataFileScan) && 
+      !(parent instanceof NestedLoopJoin)
     ) {
       parent.child = n;
       parent = n;
@@ -36,12 +37,11 @@ export function Q(nodes: Array<Nodeq>): Nodeq {
 export async function* run(q: Nodeq) {
   while (true) {
     const row = await q.next();
-
-    // if (row && typeof row === "object" && Object.keys(row).length === 0)
-    if (row && row.length === 0) continue;
-    if (!row) break;
-
-    yield await Promise.resolve(row);
+    if (row) {
+      yield await Promise.resolve(row); 
+    } else {
+      break
+    }
   }
 }
 

@@ -1,4 +1,8 @@
-import { assertAlmostEquals, assertArrayIncludes, assertEquals } from "@std/assert";
+import {
+  assertAlmostEquals,
+  assertArrayIncludes,
+  assertEquals,
+} from "@std/assert";
 import {
   run,
   Q,
@@ -71,9 +75,9 @@ Deno.test("inMemory", async (t) => {
 
       const result = [];
       for await (const value of gen) {
-        result.push(value)
+        result.push(value);
       }
-      result.forEach((r, idx) => assertArrayIncludes(r, birds[idx]))
+      result.forEach((r, idx) => assertArrayIncludes(r, birds[idx]));
     });
   });
 
@@ -226,9 +230,9 @@ Deno.test("inMemory", async (t) => {
     );
 
     const expectations = [
-     [ "ostric1", 104.0 ],
-     [ "emppen1", 23.0 ],
-     [ "wanalb", 8.5 ],
+      ["ostric1", 104.0],
+      ["emppen1", 23.0],
+      ["wanalb", 8.5],
     ];
 
     let i = 0;
@@ -240,70 +244,141 @@ Deno.test("inMemory", async (t) => {
   });
 });
 
-// Deno.test("NestedLoopJoin", async (t) => {
-//   const tableASchema: columnDefinition[] = [
-//     {
-//       name: "a",
-//       type: "int",
-//     },
-//     {
-//       name: "b",
-//       type: "text",
-//     },
-//   ];
+Deno.test("NestedLoopJoin", async (t) => {
+  const tableASchema: columnDefinition[] = [
+    {
+      name: "a",
+      type: "int",
+    },
+    {
+      name: "b",
+      type: "text",
+    },
+  ];
 
-//   const tableBSchema: columnDefinition[] = [
-//     {
-//       name: "B",
-//       type: "int",
-//     },
-//     {
-//       name: "C",
-//       type: "text",
-//     },
-//   ];
-//   const tableA = [
-//     [1, "a"],
-//     [2, "b"],
-//   ];
-//   const tableB = [
-//     [2, "A"],
-//     [3, "B"],
-//   ];
-//   await t.step("self join", async () => {
-//     const gen = run(
-//       Q([
-//         new NestedLoopJoin(
-//           new MemoryScan(tableA, tableASchema),
-//           new MemoryScan(tableA, tableASchema)
-//         ),
-//       ])
-//     );
+  const tableBSchema: columnDefinition[] = [
+    {
+      name: "B",
+      type: "int",
+    },
+    {
+      name: "C",
+      type: "text",
+    },
+  ];
+  const tableA = [
+    [1, "a"],
+    [2, "b"],
+  ];
+  const tableB = [
+    [2, "A"],
+    [3, "B"],
+  ];
+  await t.step("self join", async () => {
+    // A againt A
+    const gen = run(
+      Q([
+        new NestedLoopJoin(
+          new MemoryScan(tableA, tableASchema),
+          new MemoryScan(tableA, tableASchema)
+        ),
+      ])
+    );
 
-//     let i = 0;
-//     const result: any[] = [];
-//     for await (const value of gen) {
-//       result.push(value);
-//       // assertEquals(value["id"], expectations[i].id);
-//       i++;
-//     }
-//     assertArrayIncludes(result[0], [1, "a", 1, "a"]);
-//     assertArrayIncludes(result[1], [1, "a", 2, "b"]);
-//     assertArrayIncludes(result[2], [2, "b", 1, "a"]);
-//     assertArrayIncludes(result[3], [2, "b", 1, "a"]);
-//     // assertEquals(value["weight"], expectations[i].weight);
-//     // A againt A
-//   });
-//   await t.step("select after  join", async () => {
-//     // select those where one field matches another
-//   });
-//   await t.step("test select before  join", async () => {
-//     // child should not have to memory scan?
-//   });
-//   await t.step("three way self join", async () => {
-//     // A x A x A
-//   });
-// });
+    let i = 0;
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+      i++;
+    }
+    assertArrayIncludes(result[0], [1, "a", 1, "a"]);
+    assertArrayIncludes(result[1], [1, "a", 2, "b"]);
+    assertArrayIncludes(result[2], [2, "b", 1, "a"]);
+    assertArrayIncludes(result[3], [2, "b", 2, "b"]);
+  });
+  await t.step("select after join", async () => {
+    // select those where one field matches another
+    const gen = run(
+      Q([
+        new Selection((r) => r[3] === "b"),
+        new NestedLoopJoin(
+          new MemoryScan(tableA, tableASchema),
+          new MemoryScan(tableA, tableASchema)
+        ),
+      ])
+    );
+
+    let i = 0;
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+      i++;
+    }
+
+    assertArrayIncludes(result[0], [1, "a", 2, "b"]);
+    assertArrayIncludes(result[1], [2, "b", 2, "b"]);
+  });
+  await t.step("test select before join", async () => {
+    const tableA = [
+      [1, "a"],
+      [2, "b"],
+    ];
+
+
+    const gen = run(
+      Q([
+        new NestedLoopJoin(
+          new Selection(
+            (r) => r[1] === "b",
+            new MemoryScan(tableA, tableASchema)
+          ),
+          new MemoryScan(tableA, tableASchema)
+        ),
+      ])
+    );
+
+    let i = 0;
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+      i++;
+    }
+
+    assertArrayIncludes(result[0], [2, "b", 1, "a"]);
+    assertArrayIncludes(result[1], [2, "b", 2, "b"]);
+  });
+  await t.step("three way self join", async () => {
+    // A x A x A
+    const gen = run(
+      Q([
+        new NestedLoopJoin(
+          new NestedLoopJoin(
+            new MemoryScan(tableA, tableASchema),
+            new MemoryScan(tableA, tableASchema)
+          ),
+          new MemoryScan(tableA, tableASchema)
+        ),
+      ])
+    );
+
+    let i = 0;
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+      i++;
+    }
+
+    assertArrayIncludes(result[0], [1, "a", 1, "a", 1, "a"]);
+    assertArrayIncludes(result[1], [1, "a", 2, "b", 1, "a"]);
+    assertArrayIncludes(result[2], [2, "b", 1, "a", 1, "a"]);
+    assertArrayIncludes(result[3], [2, "b", 2, "b", 1, "a"]);
+
+    assertArrayIncludes(result[4], [1, "a", 1, "a", 2, "b"]);
+    assertArrayIncludes(result[5], [1, "a", 2, "b", 2, "b"]);
+    assertArrayIncludes(result[6], [2, "b", 1, "a", 2, "b"]);
+    assertArrayIncludes(result[7], [2, "b", 2, "b", 2, "b"]);
+  });
+});
 
 const testColumns: columnDefinition[] = [
   {

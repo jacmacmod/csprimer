@@ -3,8 +3,6 @@ import { rowItem } from "./type.ts";
 import { defaultPageSize, defaultTableLocation, HeapFile } from "./page.ts";
 import { columnDefinition, getSchema } from "./util.ts";
 
-// export type selectionFunction = (r: row) => boolean;
-// export type projectionFunction = (r: row) => row;
 export type selectionFunction = (r: rowItem[]) => boolean;
 export type projectionFunction = (r: rowItem[]) => rowItem[];
 export type Nodeq =
@@ -18,48 +16,6 @@ export type Nodeq =
   | Count
   | Selection;
 
-// export class NestedLoopJoin {
-//   table: string;
-//   pageSize = defaultPageSize;
-//   child: Nodeq | undefined;
-//   scanNode: DataFileScan | undefined;
-//   // heapFile: HeapFile | undefined;
-
-//   constructor(table: string) {
-//     this.table = table;
-//   }
-
-//   async next(): Promise<row | null> {
-//     if (this.child === null) return {};
-
-//     const subRow = await this.child?.next();
-//     if (subRow === null || subRow === undefined) return null;
-//     if (Object.keys(subRow).length === 0) return {} as row;
-
-//     if (!this.scanNode) await this.load();
-//     if (!this.scanNode) Deno.exit(1);
-//     const row: row | null = await this.scanNode.next();
-
-//     if (row) {
-//       return { ...row, ...subRow };
-//     } else {
-//       return null;
-//     }
-//   }
-
-//   async load() {
-//     this.scanNode = new DataFileScan(this.table, this.pageSize);
-//     if (!this.scanNode) Deno.exit(1);
-//     await this.scanNode.load();
-//   }
-
-//   stop() {
-//     if (this.scanNode) this.scanNode.stop();
-//     console.log("File closed.");
-
-//     return null;
-//   }
-// }
 export class DataFileScan {
   table: string;
   pageSize: number;
@@ -101,6 +57,8 @@ export class DataFileScan {
 
     return null;
   }
+
+  reset() {}
 }
 
 export class CSVFileScan {
@@ -163,16 +121,22 @@ export class CSVFileScan {
     console.log("File closed.");
     return null;
   }
+
+  reset() {
+    console.log("not implemented");
+    Deno.exit(1);
+  }
 }
 
 export class NestedLoopJoin {
-  left: MemoryScan;
-  right: MemoryScan;
-  leftRow: rowItem[] | null = null;
-  child: Nodeq | undefined;
-  rightDone: boolean = false;
+  left: Nodeq;
+  right: Nodeq;
+  leftRow: any;
 
-  constructor(left: MemoryScan, right: MemoryScan) {
+  initialized: boolean = false;
+  child: Nodeq | undefined;
+
+  constructor(left: Nodeq, right: Nodeq) {
     this.left = left;
     this.right = right;
 
@@ -180,23 +144,28 @@ export class NestedLoopJoin {
     if (!this.right) Deno.exit(1);
   }
 
-  next() {
-    if (this.left.table.length === 0 || this.right.table.length === 0)
-      return null;
-    if (!this.leftRow) {
-      this.leftRow = this.left.next();
-      if (!this.leftRow) return null;
+  async next(): Promise<rowItem[] | null> {
+    if (!this.initialized) {
+      if ((this.leftRow = await this.left.next()) === null) return null;
+      this.initialized = true;
     }
 
-    const rightRow = this.right.next();
-    if (!rightRow) {
-      this.rightDone = true;
+    let rightRow;
+    if ((rightRow = await this.right.next()) === null) {
       this.right.reset();
-      this.leftRow = this.left.next();
+      rightRow = await this.right.next();
     } else {
-      return [...this.leftRow, ...rightRow];
+      if (this.leftRow && rightRow) return [...this.leftRow, ...rightRow];
     }
+
+    if ((this.leftRow = await this.left.next()) === null) return null;
+    if (this.leftRow && rightRow) return [...this.leftRow, ...rightRow];
     return null;
+  }
+
+  reset() {
+    console.log("not implemented");
+    Deno.exit(1);
   }
 }
 export class MemoryScan {
@@ -238,9 +207,12 @@ export class Projection {
     const row = await this.child?.next();
 
     if (!row) return null;
-    if (row.length === 0) return [];
 
     return this.fn(row);
+  }
+
+  reset() {
+    this.child?.reset();
   }
 }
 
@@ -249,8 +221,7 @@ export class Count {
   done: boolean = false;
 
   async next(): Promise<rowItem[] | null> {
-    if (this.child === null) return [];
-    if (this.done) return null;
+    if (this.child === null || this.done) return null;
 
     let count = 0;
     while ((await this.child?.next()) !== null) {
@@ -260,24 +231,32 @@ export class Count {
 
     return [count];
   }
+  reset() {
+    console.log("not implemented");
+    Deno.exit(1);
+  }
 }
 
 export class Selection {
   child: Nodeq | undefined;
-  fn: selectionFunction;
+  predicate: selectionFunction;
 
-  constructor(fn: selectionFunction) {
-    this.fn = fn;
+  constructor(predicate: selectionFunction, child?: Nodeq) {
+    this.predicate = predicate;
+    this.child = child
   }
 
   async next(): Promise<rowItem[] | null> {
-    const row = await this.child?.next();
+    while (true) {
+      const row = await this.child?.next();
+      if (row === null || this.predicate(row as rowItem[]))
+        return row as rowItem[];
+    }
+  }
 
-    if (!row) return null;
-    if (row.length === 0) return [];
-    if (this.fn(row)) return row;
-
-    return [];
+  reset() {
+    this.child?.reset();
+    Deno.exit(1);
   }
 }
 
@@ -305,10 +284,13 @@ export class Limit {
     const row = await this.child?.next();
     this.count++;
 
-    if (!row) return null;
-    if (row.length === 0) return [];
+    if (row) return row;
+    return null;
+  }
 
-    return row;
+  reset() {
+    console.log("not implemented");
+    Deno.exit(1);
   }
 }
 
@@ -356,4 +338,51 @@ export class Sort {
       return 0;
     });
   }
+
+  reset() {
+    this.child?.reset();
+  }
 }
+
+// export class NestedLoopJoin {
+//   table: string;
+//   pageSize = defaultPageSize;
+//   child: Nodeq | undefined;
+//   scanNode: DataFileScan | undefined;
+//   // heapFile: HeapFile | undefined;
+
+//   constructor(table: string) {
+//     this.table = table;
+//   }
+
+//   async next(): Promise<row | null> {
+//     if (this.child === null) return {};
+
+//     const subRow = await this.child?.next();
+//     if (subRow === null || subRow === undefined) return null;
+//     if (Object.keys(subRow).length === 0) return {} as row;
+
+//     if (!this.scanNode) await this.load();
+//     if (!this.scanNode) Deno.exit(1);
+//     const row: row | null = await this.scanNode.next();
+
+//     if (row) {
+//       return { ...row, ...subRow };
+//     } else {
+//       return null;
+//     }
+//   }
+
+//   async load() {
+//     this.scanNode = new DataFileScan(this.table, this.pageSize);
+//     if (!this.scanNode) Deno.exit(1);
+//     await this.scanNode.load();
+//   }
+
+//   stop() {
+//     if (this.scanNode) this.scanNode.stop();
+//     console.log("File closed.");
+
+//     return null;
+//   }
+// }

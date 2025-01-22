@@ -58,7 +58,7 @@ class Selection {
   }
 
   next() {
-    let row = this.child.next();
+    const row = this.child.next();
 
     if (row === null) return null;
     if (row.length === 0) return [];
@@ -138,7 +138,7 @@ class Sort {
   }
 }
 
-class CSVFileScan {}
+
 
 const compareArrays = (a: row[][], b: row[][]): boolean => {
   if (a.length !== b.length) return false;
