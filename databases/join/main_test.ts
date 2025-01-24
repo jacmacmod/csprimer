@@ -1,8 +1,4 @@
-import {
-  assertAlmostEquals,
-  assertArrayIncludes,
-  assertEquals,
-} from "@std/assert";
+import { assertArrayIncludes, assertEquals } from "@std/assert";
 import {
   run,
   Q,
@@ -245,7 +241,7 @@ Deno.test("inMemory", async (t) => {
 });
 
 Deno.test("NestedLoopJoin", async (t) => {
-  const tableASchema: columnDefinition[] = [
+  const schema: columnDefinition[] = [
     {
       name: "a",
       type: "int",
@@ -256,116 +252,116 @@ Deno.test("NestedLoopJoin", async (t) => {
     },
   ];
 
-  const tableBSchema: columnDefinition[] = [
-    {
-      name: "B",
-      type: "int",
-    },
-    {
-      name: "C",
-      type: "text",
-    },
-  ];
   const tableA = [
     [1, "a"],
     [2, "b"],
   ];
+
   const tableB = [
-    [2, "A"],
-    [3, "B"],
+    [3, "A"],
+    [4, "B"],
+    [5, "C"],
   ];
+
   await t.step("self join", async () => {
-    // A againt A
     const gen = run(
       Q([
         new NestedLoopJoin(
-          new MemoryScan(tableA, tableASchema),
-          new MemoryScan(tableA, tableASchema)
+          new MemoryScan(tableA, schema),
+          new MemoryScan(tableA, schema)
         ),
       ])
     );
 
-    let i = 0;
     const result = [];
     for await (const value of gen) {
       result.push(value);
-      i++;
     }
+
     assertArrayIncludes(result[0], [1, "a", 1, "a"]);
     assertArrayIncludes(result[1], [1, "a", 2, "b"]);
     assertArrayIncludes(result[2], [2, "b", 1, "a"]);
     assertArrayIncludes(result[3], [2, "b", 2, "b"]);
   });
-  await t.step("select after join", async () => {
-    // select those where one field matches another
+
+  await t.step("join A X B", async () => {
     const gen = run(
       Q([
-        new Selection((r) => r[3] === "b"),
         new NestedLoopJoin(
-          new MemoryScan(tableA, tableASchema),
-          new MemoryScan(tableA, tableASchema)
+          new MemoryScan(tableA, schema),
+          new MemoryScan(tableB, schema)
         ),
       ])
     );
 
-    let i = 0;
     const result = [];
     for await (const value of gen) {
       result.push(value);
-      i++;
+    }
+
+    assertArrayIncludes(result[0], [1, "a", 3, "A"]);
+    assertArrayIncludes(result[1], [1, "a", 4, "B"]);
+    assertArrayIncludes(result[2], [1, "a", 5, "C"]);
+    assertArrayIncludes(result[3], [2, "b", 3, "A"]);
+    assertArrayIncludes(result[4], [2, "b", 4, "B"]);
+    assertArrayIncludes(result[5], [2, "b", 5, "C"]);
+  });
+
+  await t.step("select after join", async () => {
+    const gen = run(
+      Q([
+        new Selection((r) => r[3] === "b"),
+        new NestedLoopJoin(
+          new MemoryScan(tableA, schema),
+          new MemoryScan(tableA, schema)
+        ),
+      ])
+    );
+
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
     }
 
     assertArrayIncludes(result[0], [1, "a", 2, "b"]);
     assertArrayIncludes(result[1], [2, "b", 2, "b"]);
   });
-  await t.step("test select before join", async () => {
-    const tableA = [
-      [1, "a"],
-      [2, "b"],
-    ];
 
-
+  await t.step("select before join", async () => {
     const gen = run(
       Q([
         new NestedLoopJoin(
-          new Selection(
-            (r) => r[1] === "b",
-            new MemoryScan(tableA, tableASchema)
-          ),
-          new MemoryScan(tableA, tableASchema)
+          new Selection((r) => r[1] === "b", new MemoryScan(tableA, schema)),
+          new MemoryScan(tableA, schema)
         ),
       ])
     );
 
-    let i = 0;
     const result = [];
     for await (const value of gen) {
       result.push(value);
-      i++;
     }
 
     assertArrayIncludes(result[0], [2, "b", 1, "a"]);
     assertArrayIncludes(result[1], [2, "b", 2, "b"]);
   });
-  await t.step("three way self join", async () => {
-    // A x A x A
+
+  await t.step("three-way self join", async () => {
     const gen = run(
       Q([
         new NestedLoopJoin(
           new NestedLoopJoin(
-            new MemoryScan(tableA, tableASchema),
-            new MemoryScan(tableA, tableASchema)
+            new MemoryScan(tableA, schema),
+            new MemoryScan(tableA, schema)
           ),
-          new MemoryScan(tableA, tableASchema)
+          new MemoryScan(tableA, schema)
         ),
       ])
     );
 
-    let i = 0;
     const result = [];
     for await (const value of gen) {
       result.push(value);
-      i++;
     }
 
     assertArrayIncludes(result[0], [1, "a", 1, "a", 1, "a"]);
@@ -377,6 +373,39 @@ Deno.test("NestedLoopJoin", async (t) => {
     assertArrayIncludes(result[5], [1, "a", 2, "b", 2, "b"]);
     assertArrayIncludes(result[6], [2, "b", 1, "a", 2, "b"]);
     assertArrayIncludes(result[7], [2, "b", 2, "b", 2, "b"]);
+  });
+
+  await t.step("join two data files -- movielens", async () => {
+    const gen = run(
+      Q([
+        new Projection((r) => [r[0], r[1], r[2], r[4], r[5]]),
+        new Limit(2),
+        new Selection((r) => r[0] === r[3]),
+        new NestedLoopJoin(
+          new DataFileScan("movies", defaultPageSize, "tables"),
+          new DataFileScan("links", defaultPageSize, "tables")
+        ),
+      ])
+    );
+
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+    }
+    assertArrayIncludes(result[0], [
+      1,
+      "Toy Story (1995)",
+      "Adventure|Animation|Children|Comedy|Fantasy",
+      "0114709",
+      862,
+    ]);
+    assertArrayIncludes(result[1], [
+      2,
+      "Jumanji (1995)",
+      "Adventure|Children|Fantasy",
+      "0113497",
+      8844,
+    ]);
   });
 });
 
@@ -395,12 +424,12 @@ const testColumns: columnDefinition[] = [
   },
 ];
 
-Deno.test("Test CSV file scan", async (t) => {
+Deno.test("csv file scan", async (t) => {
   await t.step("create table and schema file", async () => {
     await createTable("test", testColumns, "test");
   });
 
-  await t.step("Test CSV scan", async () => {
+  await t.step("compare csv rows and csv file scan output", async () => {
     const gen = run(Q([new CSVFileScan("test/test.csv", "test", "test")]));
 
     const csv = await Deno.open("test/test.csv", { read: true });
@@ -419,7 +448,7 @@ Deno.test("Test CSV file scan", async (t) => {
   });
 });
 
-Deno.test("Test Insert and Scan", async (t) => {
+Deno.test("test data scan", async (t) => {
   await t.step("create table and schema file", async () => {
     await createTable("test", testColumns, "test");
   });

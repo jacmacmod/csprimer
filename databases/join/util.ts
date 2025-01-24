@@ -24,8 +24,7 @@ export function Q(nodes: Array<Nodeq>): Nodeq {
       !(parent instanceof CSVFileScan) &&
       !(parent instanceof MemoryScan) &&
       !(parent instanceof NestedLoopJoin) &&
-      !(parent instanceof DataFileScan) && 
-      !(parent instanceof NestedLoopJoin)
+      !(parent instanceof DataFileScan)
     ) {
       parent.child = n;
       parent = n;

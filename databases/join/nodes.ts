@@ -58,7 +58,13 @@ export class DataFileScan {
     return null;
   }
 
-  reset() {}
+  async reset() {
+    if (this.heapFile?.file && !this.heapFile.done) {
+      await this.heapFile.reset();
+    } else {
+      await this.load();
+    }
+  }
 }
 
 export class CSVFileScan {
@@ -131,7 +137,7 @@ export class CSVFileScan {
 export class NestedLoopJoin {
   left: Nodeq;
   right: Nodeq;
-  leftRow: any;
+  leftRow: rowItem[] | null | undefined;
 
   initialized: boolean = false;
   child: Nodeq | undefined;
@@ -146,26 +152,47 @@ export class NestedLoopJoin {
 
   async next(): Promise<rowItem[] | null> {
     if (!this.initialized) {
-      if ((this.leftRow = await this.left.next()) === null) return null;
+      if ((this.leftRow = await this.left.next()) === null) {
+        this.stop();
+        return null;
+      }
       this.initialized = true;
     }
 
     let rightRow;
     if ((rightRow = await this.right.next()) === null) {
-      this.right.reset();
+      await this.right.reset();
       rightRow = await this.right.next();
     } else {
       if (this.leftRow && rightRow) return [...this.leftRow, ...rightRow];
     }
 
-    if ((this.leftRow = await this.left.next()) === null) return null;
+    if ((this.leftRow = await this.left.next()) === null) {
+      this.stop();
+      return null;
+    }
     if (this.leftRow && rightRow) return [...this.leftRow, ...rightRow];
+
+    this.stop();
     return null;
   }
 
   reset() {
     console.log("not implemented");
     Deno.exit(1);
+  }
+
+  stop() {
+    if (this.left instanceof CSVFileScan || this.left instanceof DataFileScan) {
+      this.left.stop();
+    }
+
+    if (
+      this.right instanceof CSVFileScan ||
+      this.right instanceof DataFileScan
+    ) {
+      this.right.stop();
+    }
   }
 }
 export class MemoryScan {
@@ -192,6 +219,8 @@ export class MemoryScan {
   reset() {
     this.idx = 0;
   }
+
+  stop() {}
 }
 
 export class Projection {
@@ -214,6 +243,10 @@ export class Projection {
   reset() {
     this.child?.reset();
   }
+
+  stop() {
+    console.log("projection: not implemented");
+  }
 }
 
 export class Count {
@@ -231,7 +264,13 @@ export class Count {
 
     return [count];
   }
+
   reset() {
+    console.log("not implemented");
+    Deno.exit(1);
+  }
+
+  stop() {
     console.log("not implemented");
     Deno.exit(1);
   }
@@ -243,20 +282,27 @@ export class Selection {
 
   constructor(predicate: selectionFunction, child?: Nodeq) {
     this.predicate = predicate;
-    this.child = child
+    this.child = child;
   }
 
   async next(): Promise<rowItem[] | null> {
     while (true) {
       const row = await this.child?.next();
-      if (row === null || this.predicate(row as rowItem[]))
+      if (row === null || this.predicate(row as rowItem[])) {
         return row as rowItem[];
+      }
     }
   }
 
   reset() {
     this.child?.reset();
     Deno.exit(1);
+  }
+
+  stop() {
+    if (this.child && this.child instanceof NestedLoopJoin) {
+      this.child?.stop();
+    }
   }
 }
 
@@ -272,12 +318,7 @@ export class Limit {
 
   async next(): Promise<rowItem[] | null> {
     if (this.count === this.n) {
-      if (
-        this.child instanceof CSVFileScan ||
-        this.child instanceof DataFileScan
-      ) {
-        this.child.stop();
-      }
+      if (this.child) this.child?.stop();
       return null;
     }
 
@@ -289,6 +330,11 @@ export class Limit {
   }
 
   reset() {
+    console.log("not implemented");
+    Deno.exit(1);
+  }
+
+  stop() {
     console.log("not implemented");
     Deno.exit(1);
   }
@@ -342,47 +388,8 @@ export class Sort {
   reset() {
     this.child?.reset();
   }
+
+  stop() {
+    console.log("Sort: stop() not implemented");
+  }
 }
-
-// export class NestedLoopJoin {
-//   table: string;
-//   pageSize = defaultPageSize;
-//   child: Nodeq | undefined;
-//   scanNode: DataFileScan | undefined;
-//   // heapFile: HeapFile | undefined;
-
-//   constructor(table: string) {
-//     this.table = table;
-//   }
-
-//   async next(): Promise<row | null> {
-//     if (this.child === null) return {};
-
-//     const subRow = await this.child?.next();
-//     if (subRow === null || subRow === undefined) return null;
-//     if (Object.keys(subRow).length === 0) return {} as row;
-
-//     if (!this.scanNode) await this.load();
-//     if (!this.scanNode) Deno.exit(1);
-//     const row: row | null = await this.scanNode.next();
-
-//     if (row) {
-//       return { ...row, ...subRow };
-//     } else {
-//       return null;
-//     }
-//   }
-
-//   async load() {
-//     this.scanNode = new DataFileScan(this.table, this.pageSize);
-//     if (!this.scanNode) Deno.exit(1);
-//     await this.scanNode.load();
-//   }
-
-//   stop() {
-//     if (this.scanNode) this.scanNode.stop();
-//     console.log("File closed.");
-
-//     return null;
-//   }
-// }

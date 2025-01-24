@@ -129,6 +129,7 @@ export class HeapFile {
       await this.file.read(this.buf);
       await this.file.seek(-this.pageSize, Deno.SeekMode.End);
 
+      // deno-lint-ignore no-empty
       while (this.read() !== null) {} // get to next insertion point
     }
 
@@ -179,5 +180,27 @@ export class HeapFile {
 
     this.done = true;
     this.file = undefined;
+  }
+
+  async reset() {
+    if (this.file) {
+      await this.file.seek(0, Deno.SeekMode.Start);
+
+      this.buf = new Uint8Array();
+      this.done = false;
+      this.upperOffset = 6;
+      this.lowerOffset = defaultPageSize;
+      this.currentPage = 1;
+
+      const numberOfBytesRead = await this.file.read(this.buf);
+      if (numberOfBytesRead === null || numberOfBytesRead === 0) {
+        this.done = true;
+        this.file.close();
+      }
+      return;
+    }
+
+    console.log("panic: unimplemented");
+    Deno.exit(1);
   }
 }
