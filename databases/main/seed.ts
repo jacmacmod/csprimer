@@ -1,4 +1,4 @@
-import { columnDefinition, createTable, insertCSV, Q, run } from "./util.ts";
+import { columnDefinition, createTable, insertCSV } from "./util.ts";
 
 async function main() {
   const movieColumns: columnDefinition[] = [
