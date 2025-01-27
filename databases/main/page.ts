@@ -1,4 +1,4 @@
-import { rowItem } from "./type.ts";
+import { column, row } from "./type.ts";
 import {
   columnDefinition,
   decodeRow,
@@ -37,7 +37,7 @@ export class Page {
   }
 
   createBuffer(): Uint8Array {
-    // pageid (Uint16) lower(Uint16) upper(Uint16) (rowItem(Uint16)...n items))
+    // pageid (Uint16) lower(Uint16) upper(Uint16) (column(Uint16)...n items))
     const buffer = new ArrayBuffer(this.pageSize);
     const view = new DataView(buffer);
 
@@ -114,7 +114,7 @@ export class HeapFile {
     return row;
   }
 
-  async insert(rows: rowItem[][]) {
+  async insert(rows: row[]) {
     const tableFileLocation = path.join(this.dir, `${this.table}.data`);
     const fileInfo = await Deno.stat(tableFileLocation);
 

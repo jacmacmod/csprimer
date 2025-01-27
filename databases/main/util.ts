@@ -5,9 +5,11 @@ import {
   DataFileScan,
   HashJoin,
   MemoryScan,
+  MergeJoin,
   Nodeq,
 } from "./nodes.ts";
-import { rowItem } from "./type.ts";
+
+import { row } from "./type.ts";
 import { defaultPageSize, defaultTableLocation, Page } from "./page.ts";
 import { NestedLoopJoin } from "./nodes.ts";
 
@@ -31,6 +33,7 @@ export function Q(nodes: Array<Nodeq>): Nodeq {
       !(parent instanceof MemoryScan) &&
       !(parent instanceof NestedLoopJoin) &&
       !(parent instanceof HashJoin) &&
+      !(parent instanceof MergeJoin) &&
       !(parent instanceof DataFileScan)
     ) {
       parent.child = n;
@@ -218,10 +221,7 @@ export async function insertCSV(
   return totalEntries;
 }
 
-export function encodeRow(
-  row: rowItem[],
-  schema: columnDefinition[]
-): Uint8Array {
+export function encodeRow(row: row, schema: columnDefinition[]): Uint8Array {
   const output = [];
   let size = 0;
 
@@ -272,11 +272,8 @@ export function encodeRow(
   return result;
 }
 
-export function decodeRow(
-  arr: Uint8Array,
-  schema: columnDefinition[]
-): rowItem[] {
-  const row: rowItem[] = [];
+export function decodeRow(arr: Uint8Array, schema: columnDefinition[]): row {
+  const row: row = [];
   let offset = 0;
 
   for (let i = 0; i < schema.length; i++) {

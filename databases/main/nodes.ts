@@ -1,11 +1,12 @@
 import { CsvParseStream } from "jsr:@std/csv";
-import { rowItem } from "./type.ts";
+import { column, row } from "./type.ts";
 import { defaultPageSize, defaultTableLocation, HeapFile } from "./page.ts";
 import { columnDefinition, getSchema } from "./util.ts";
 
-export type selectionFunction = (r: rowItem[]) => boolean;
-export type projectionFunction = (r: rowItem[]) => rowItem[];
+export type selectionFunction = (r: row) => boolean;
+export type projectionFunction = (r: row) => row;
 export type Nodeq =
+  | MergeJoin
   | NestedLoopJoin
   | HashJoin
   | Sort
@@ -54,7 +55,7 @@ export class DataFileScan {
   }
 
   stop() {
-    if (this.heapFile) this.heapFile.stop();
+    if (this.heapFile && !this.heapFile.done) this.heapFile.stop();
 
     return null;
   }
@@ -105,7 +106,7 @@ export class CSVFileScan {
       .pipeThrough(new CsvParseStream())
       .getReader();
 
-    // use first rowItem for schema
+    // use first column for schema
     const result = await this.reader?.read();
     // csv library closes file automatically when reaching the end
     if (result && !result.done) this.csvHeader = result.value;
@@ -129,7 +130,7 @@ export class CSVFileScan {
 export class NestedLoopJoin {
   left: Nodeq;
   right: Nodeq;
-  leftRow: rowItem[] | null | undefined;
+  leftRow: row | null | undefined;
 
   initialized: boolean = false;
   child: Nodeq | undefined;
@@ -142,7 +143,7 @@ export class NestedLoopJoin {
     if (!this.right) Deno.exit(1);
   }
 
-  async next(): Promise<rowItem[] | null> {
+  async next(): Promise<row | null> {
     if (!this.initialized) {
       if ((this.leftRow = await this.left.next()) === null) {
         this.stop();
@@ -192,21 +193,20 @@ export class NestedLoopJoin {
 export class HashJoin {
   left: Nodeq | undefined;
   right: Nodeq | undefined;
-  hashKeyLeft: number = 0;
-  hashKeyRight: number = 0;
+  hashKeyLeft: (r: row) => column;
+  hashKeyRight: (r: row) => column;
 
-  initialized: boolean = false;
-
-  leftTable: rowItem[][] = [];
-  hashTable: { [key: string]: rowItem[][] } = {};
-  idx: number = 0;
+  hashTable: { [key: string]: row[] } | undefined = undefined;
+  bucket: row[] = [];
   bucketIdx = 0;
+
+  rightRow: string[] | row | null | undefined;
 
   constructor(
     left: Nodeq,
     right: Nodeq,
-    hashKeyLeft: number,
-    hashKeyRight: number
+    hashKeyLeft: (r: row) => column,
+    hashKeyRight: (r: row) => column
   ) {
     this.left = left;
     this.right = right;
@@ -214,63 +214,164 @@ export class HashJoin {
     this.hashKeyRight = hashKeyRight;
   }
 
-  async next(): Promise<rowItem[] | null> {
-    if (!this.initialized) {
-      await this.init();
-    }
+  async next(): Promise<row | null> {
+    if (!this.hashTable) {
+      this.hashTable = {};
+      while (true) {
+        const row = await this.left?.next();
+        if (!row) break;
 
-    // next item is current left item combined with current right item
-    const leftRow = this.leftTable[this.idx];
-    if (!leftRow) return null;
-
-    const key = leftRow[this.hashKeyLeft] as string;
-    const rightRows = this.hashTable[key];
-
-    if (rightRows === undefined) return null;
-
-    if (leftRow && rightRows) {
-      const rightRow = rightRows[this.bucketIdx];
-      if (rightRow) {
-        this.bucketIdx++;
-        return [...leftRow, ...rightRow];
-      } else {
-        this.bucketIdx = 0;
-        this.idx++;
-        return await this.next();
-      }
-    }
-
-    return null;
-  }
-
-  private async init() {
-    let row;
-    while ((row = await this.left?.next()) !== null) {
-      if (!row) break;
-      const key = String(row[this.hashKeyLeft]) as string;
-      this.hashTable[key] = [];
-      this.leftTable.push(row);
-    }
-
-    while ((row = await this.right?.next()) !== null) {
-      if (!row) break;
-      const key = String(row[this.hashKeyRight]);
-      if (this.hashTable[key] !== undefined) {
+        const key = String(this.hashKeyLeft(row)) as string;
+        if (!this.hashTable[key]) this.hashTable[key] = [];
         this.hashTable[key].push(row);
       }
     }
 
-    this.initialized = true;
+    while (this.bucketIdx >= this.bucket.length) {
+      this.rightRow = await this.right?.next();
+      if (!this.rightRow) return null;
+
+      const hashKey = String(this.hashKeyRight(this.rightRow)) as string;
+      this.bucket = this.hashTable && this.hashTable[hashKey];
+      this.bucketIdx = 0;
+    }
+
+    const leftRow = this.bucket[this.bucketIdx];
+    this.bucketIdx++;
+
+    if (leftRow && this.rightRow) {
+      return [...leftRow, ...this.rightRow];
+    }
+    return null;
+  }
+
+  stop() {
+    if (this.left instanceof CSVFileScan || this.left instanceof DataFileScan) {
+      this.left.stop();
+    }
+
+    if (
+      this.right instanceof CSVFileScan ||
+      this.right instanceof DataFileScan
+    ) {
+      this.right.stop();
+    }
+  }
+
+  reset() {
+    this.bucket = [];
+    this.bucketIdx = 0;
+    this.hashTable = undefined;
+    this.rightRow = null;
+  }
+}
+
+export class MergeJoin {
+  left: Nodeq | undefined;
+  right: Nodeq | undefined;
+  sortKeyLeft: (r: row) => column;
+  sortKeyRight: (r: row) => column;
+
+  leftTable: row[] = [];
+  rightTable: row[] = [];
+
+  leftIdx: number = 0;
+  rightIdx: number = 0;
+
+  rightDone: boolean = true;
+
+  constructor(
+    left: Nodeq,
+    right: Nodeq,
+    sortKeyLeft: (r: row) => column,
+    sortKeyRight: (r: row) => column
+  ) {
+    this.left = left;
+    this.right = right;
+    this.sortKeyLeft = sortKeyLeft;
+    this.sortKeyRight = sortKeyRight;
+  }
+
+  async next(): Promise<row | null> {
+    if (this.leftTable.length === 0) await this.init();
+
+    const leftRow = this.leftTable[this.leftIdx];
+    const rightRow = this.rightTable[this.rightIdx];
+
+    if (!leftRow || !rightRow) return null;
+
+    const leftKey = this.sortKeyLeft(leftRow);
+    const rightKey = this.sortKeyRight(rightRow);
+
+    if (leftKey === rightKey) {
+      this.rightIdx++;
+      return [...leftRow, ...rightRow];
+    } else {
+      this.leftIdx++;
+      if (
+        this.leftTable[this.leftIdx] &&
+        leftKey === this.sortKeyLeft(this.leftTable[this.leftIdx])
+      ) {
+        // back track right table when the next left is the same as previous left
+        let i = this.rightIdx - 1;
+        while (i > 0) {
+          if (this.sortKeyRight(this.rightTable[i]) == leftKey) {
+            i--;
+          } else {
+            break;
+          }
+        }
+        this.rightIdx = i;
+      }
+      return await this.next();
+    }
+  }
+
+  private async init() {
+    let row;
+    while ((row = await this.left?.next())) {
+      this.leftTable.push(row);
+    }
+    while ((row = await this.right?.next())) {
+      this.rightTable.push(row);
+    }
+
+    this.sort(this.leftTable, this.sortKeyLeft);
+    this.sort(this.rightTable, this.sortKeyRight);
+  }
+
+  private sort(table: row[], sortKey: (r: row) => column) {
+    table.sort((a, b) => {
+      const fieldA = sortKey(a);
+      const fieldB = sortKey(b);
+
+      if (fieldA < fieldB) return -1;
+      if (fieldA > fieldB) return 1;
+      return 0;
+    });
+  }
+
+  stop() {
+    if (this.left instanceof CSVFileScan || this.left instanceof DataFileScan) {
+      this.left.stop();
+    }
+
+    if (
+      this.right instanceof CSVFileScan ||
+      this.right instanceof DataFileScan
+    ) {
+      this.right.stop();
+    }
   }
 }
 
 export class MemoryScan {
   idx: number;
-  table: rowItem[][];
+  table: row[];
   schema: columnDefinition[] = [];
   sorted: boolean = false;
 
-  constructor(table: rowItem[][], schema: columnDefinition[]) {
+  constructor(table: row[], schema: columnDefinition[]) {
     this.table = table;
     this.schema = schema;
     this.idx = 0;
@@ -300,7 +401,7 @@ export class Projection {
     this.fn = fn;
   }
 
-  async next(): Promise<rowItem[] | null> {
+  async next(): Promise<row | null> {
     if (!this.fn) Deno.exit(1);
     const row = await this.child?.next();
 
@@ -325,7 +426,7 @@ export class Count {
   child: Nodeq | undefined;
   done: boolean = false;
 
-  async next(): Promise<rowItem[] | null> {
+  async next(): Promise<row | null> {
     if (this.child === null || this.done) return null;
 
     let count = 0;
@@ -347,11 +448,11 @@ export class Selection {
     this.child = child;
   }
 
-  async next(): Promise<rowItem[] | null> {
+  async next(): Promise<row | null> {
     while (true) {
       const row = await this.child?.next();
-      if (row === null || this.predicate(row as rowItem[])) {
-        return row as rowItem[];
+      if (row === null || this.predicate(row as row)) {
+        return row as row;
       }
     }
   }
@@ -383,13 +484,14 @@ export class Limit {
     this.count = 0;
   }
 
-  async next(): Promise<rowItem[] | null> {
+  async next(): Promise<row | null> {
     if (this.count === this.n) {
       if (
         this.child &&
         (this.child instanceof CSVFileScan ||
           this.child instanceof DataFileScan ||
           this.child instanceof NestedLoopJoin ||
+          this.child instanceof HashJoin ||
           this.child instanceof Selection)
       ) {
         this.child?.stop();
@@ -410,7 +512,7 @@ export class Sort {
   colIdx: number = 0;
   sign: number = 1;
   child: Nodeq | undefined;
-  sortedRows: rowItem[][] = [];
+  sortedRows: row[] = [];
   idx: number = 0;
 
   constructor(colIdx: number, desc: boolean = false) {

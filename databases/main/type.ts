@@ -1,5 +1,2 @@
-export type rowItem = string | number | boolean;
-
-export type row = {
-  [key: string]: rowItem;
-};
+export type column = string | number | boolean;
+export type row = column[]

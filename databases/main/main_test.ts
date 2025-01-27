@@ -18,10 +18,12 @@ import {
   Sort,
   NestedLoopJoin,
   HashJoin,
+  MergeJoin,
 } from "./nodes.ts";
 import { CsvParseStream } from "jsr:@std/csv";
 import { createTable } from "./util.ts";
 import { defaultPageSize, HeapFile } from "./page.ts";
+import { row } from "./type.ts";
 
 Deno.test("inMemory", async (t) => {
   const birds = [
@@ -439,57 +441,202 @@ Deno.test("Hash join", async (t) => {
         new HashJoin(
           new DataFileScan("movies", defaultPageSize, "tables"),
           new DataFileScan("links", defaultPageSize, "tables"),
-          0,
-          0
+          (r: row) => r[0],
+          (r: row) => r[0]
         ),
       ])
     );
 
     let i = 0;
     for await (const value of gen) {
-      assertArrayIncludes(value, expectations[i])
+      assertArrayIncludes(value, expectations[i]);
       i++;
     }
   });
-  
+
   await t.step("movies X ratings: join ON movieID Limit 20", async () => {
     const expectations = [
+      [2, "Jumanji (1995)", 1, 2, 3.5],
       [
+        29,
+        "City of Lost Children, The (Cité des enfants perdus, La) (1995)",
         1,
-        "Toy Story (1995)",
-        "Adventure|Animation|Children|Comedy|Fantasy",
-        "0114709",
-        862,
+        29,
+        3.5,
       ],
-      [2, "Jumanji (1995)", "Adventure|Children|Fantasy", "0113497", 8844],
-      [3, "Grumpier Old Men (1995)", "Comedy|Romance", "0113228", 15602],
-      [4, "Waiting to Exhale (1995)", "Comedy|Drama|Romance", "0114885", 31357],
-      [5, "Father of the Bride Part II (1995)", "Comedy", "0113041", 11862],
-      [6, "Heat (1995)", "Action|Crime|Thriller", "0113277", 949],
-      [7, "Sabrina (1995)", "Comedy|Romance", "0114319", 11860],
-      [8, "Tom and Huck (1995)", "Adventure|Children", "0112302", 45325],
-      [9, "Sudden Death (1995)", "Action", "0114576", 9091],
-      [10, "GoldenEye (1995)", "Action|Adventure|Thriller", "0113189", 710],
+      [32, "Twelve Monkeys (a.k.a. 12 Monkeys) (1995)", 1, 32, 3.5],
+      [47, "Seven (a.k.a. Se7en) (1995)", 1, 47, 3.5],
+      [50, "Usual Suspects, The (1995)", 1, 50, 3.5],
+      [112, "Rumble in the Bronx (Hont faan kui) (1995)", 1, 112, 3.5],
+      [151, "Rob Roy (1995)", 1, 151, 4],
+      [223, "Clerks (1994)", 1, 223, 4],
+      [
+        253,
+        "Interview with the Vampire: The Vampire Chronicles (1994)",
+        1,
+        253,
+        4,
+      ],
+      [260, "Star Wars: Episode IV - A New Hope (1977)", 1, 260, 4],
+      [
+        293,
+        "Léon: The Professional (a.k.a. The Professional) (Léon) (1994)",
+        1,
+        293,
+        4,
+      ],
+      [296, "Pulp Fiction (1994)", 1, 296, 4],
+      [318, "Shawshank Redemption, The (1994)", 1, 318, 4],
+      [337, "What's Eating Gilbert Grape (1993)", 1, 337, 3.5],
+      [367, "Mask, The (1994)", 1, 367, 3.5],
+      [541, "Blade Runner (1982)", 1, 541, 4],
+      [589, "Terminator 2: Judgment Day (1991)", 1, 589, 3.5],
+      [593, "Silence of the Lambs, The (1991)", 1, 593, 3.5],
+      [653, "Dragonheart (1996)", 1, 653, 3],
+      [919, "Wizard of Oz, The (1939)", 1, 919, 3.5],
     ];
 
     const gen = run(
       Q([
-        new Projection((r) => [r[0], r[1], r[2], r[4], r[5]]),
-        new Limit(10),
+        new Projection((r) => [r[0], r[1], r[3], r[4], r[5]]),
+        new Limit(20),
         new HashJoin(
           new DataFileScan("movies", defaultPageSize, "tables"),
-          new DataFileScan("links", defaultPageSize, "tables"),
-          0,
-          0
+          new DataFileScan("ratings", defaultPageSize, "tables"),
+          (r: row) => r[0],
+          (r: row) => r[1]
         ),
       ])
     );
 
     let i = 0;
     for await (const value of gen) {
-      assertArrayIncludes(value, expectations[i])
+      assertArrayIncludes(value, expectations[i]);
       i++;
     }
+  });
+});
+
+Deno.test("MergeJoin", async (t) => {
+  await t.step("unique left join relation condition", async () => {
+    const userSchema: columnDefinition[] = [
+      {
+        name: "userId",
+        type: "int",
+      },
+      {
+        name: "name",
+        type: "text",
+      },
+    ];
+
+    const paymentSchema: columnDefinition[] = [
+      {
+        name: "paymentId",
+        type: "int",
+      },
+      {
+        name: "userId",
+        type: "int",
+      },
+      {
+        name: "amount",
+        type: "float64",
+      },
+    ];
+    const left = [
+      [2, "bar"],
+      [1, "foo"],
+    ];
+
+    const right = [
+      [1, 2, 0.5],
+      [2, 1, 0.7],
+      [3, 2, 0.9],
+    ];
+
+    const gen = run(
+      Q([
+        new MergeJoin(
+          new MemoryScan(left, userSchema),
+          new MemoryScan(right, paymentSchema),
+          (r: row) => r[0],
+          (r: row) => r[1]
+        ),
+      ])
+    );
+
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+    }
+
+    assertArrayIncludes(result[0], [1, "foo", 2, 1, 0.7]);
+    assertArrayIncludes(result[1], [2, "bar", 1, 2, 0.5]);
+    assertArrayIncludes(result[2], [2, "bar", 3, 2, 0.9]);
+  });
+
+  await t.step("non-unique left join relation condition", async () => {
+    const userSchema: columnDefinition[] = [
+      {
+        name: "userId",
+        type: "int",
+      },
+      {
+        name: "groupId",
+        type: "int",
+      },
+      {
+        name: "name",
+        type: "text",
+      },
+    ];
+
+    const paymentSchema: columnDefinition[] = [
+      {
+        name: "paymentId",
+        type: "int",
+      },
+      {
+        name: "groupId",
+        type: "int",
+      },
+      {
+        name: "amount",
+        type: "float64",
+      },
+    ];
+    const left = [
+      [1, 2, "foo"],
+      [2, 1, "bar"],
+      [3, 1, "baz"],
+    ];
+
+    const right = [
+      [1, 1, 0.2],
+      [2, 1, 0.3],
+      [3, 3, 0.4],
+    ];
+    const gen = run(
+      Q([
+        new MergeJoin(
+          new MemoryScan(left, userSchema),
+          new MemoryScan(right, paymentSchema),
+          (r: row) => r[1],
+          (r: row) => r[1]
+        ),
+      ])
+    );
+
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+    }
+
+    assertArrayIncludes(result[0], [2, 1, "bar", 1, 1, 0.2]);
+    assertArrayIncludes(result[1], [2, 1, "bar", 2, 1, 0.3]);
+    assertArrayIncludes(result[2], [3, 1, "baz", 1, 1, 0.2]);
+    assertArrayIncludes(result[3], [3, 1, "baz", 2, 1, 0.3]);
   });
 });
 
