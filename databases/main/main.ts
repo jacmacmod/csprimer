@@ -5,13 +5,13 @@ import { defaultPageSize } from "./page.ts";
 async function main() {
   const gen = run(
     Q([
-      new Projection((r) => [r[0], r[1], r[3], r[4],r[5]]),
+      new Projection((r) => [r[0], r[1], r[3], r[4], r[5]]),
       new Limit(20),
       new HashJoin(
         new DataFileScan("movies", defaultPageSize, "tables"),
         new DataFileScan("ratings", defaultPageSize, "tables"),
-        0,
-        1
+        (r) => r[0],
+        (r) => r[1]
       ),
     ])
   );

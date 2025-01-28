@@ -1,17 +1,8 @@
 import * as path from "jsr:@std/path";
 
-import {
-  CSVFileScan,
-  DataFileScan,
-  HashJoin,
-  MemoryScan,
-  MergeJoin,
-  Nodeq,
-} from "./nodes.ts";
-
+import { CSVFileScan, Nodeq } from "./nodes.ts";
 import { row } from "./type.ts";
 import { defaultPageSize, defaultTableLocation, Page } from "./page.ts";
-import { NestedLoopJoin } from "./nodes.ts";
 
 type columnType = "int" | "text" | "float32" | "float64";
 
@@ -22,24 +13,17 @@ export type columnDefinition = {
   nullable?: boolean;
 };
 
-export function Q(nodes: Array<Nodeq>): Nodeq {
+export function Q(nodes: Nodeq[]): Nodeq {
   const ns = nodes[Symbol.iterator]();
   const root: Nodeq = ns.next().value!;
   let parent: Nodeq = root;
-
+  
   for (const n of ns) {
-    if (
-      !(parent instanceof CSVFileScan) &&
-      !(parent instanceof MemoryScan) &&
-      !(parent instanceof NestedLoopJoin) &&
-      !(parent instanceof HashJoin) &&
-      !(parent instanceof MergeJoin) &&
-      !(parent instanceof DataFileScan)
-    ) {
-      parent.child = n;
-      parent = n;
-    }
+    parent.child = n;
+    parent = n;
   }
+  
+  parent.child = null;
   return root;
 }
 

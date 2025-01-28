@@ -20,6 +20,7 @@ export type Nodeq =
 
 export class DataFileScan {
   table: string;
+  child: Nodeq | null = null;
   pageSize: number;
   heapFile: HeapFile | undefined;
   dir: string = defaultTableLocation;
@@ -70,6 +71,7 @@ export class DataFileScan {
 }
 
 export class CSVFileScan {
+  child: Nodeq | null = null;
   fileName: string;
   csv: Deno.FsFile | undefined;
   csvHeader: string[] | undefined;
@@ -130,10 +132,11 @@ export class CSVFileScan {
 export class NestedLoopJoin {
   left: Nodeq;
   right: Nodeq;
+  child: Nodeq | null = null;
+
   leftRow: row | null | undefined;
 
   initialized: boolean = false;
-  child: Nodeq | undefined;
 
   constructor(left: Nodeq, right: Nodeq) {
     this.left = left;
@@ -193,6 +196,8 @@ export class NestedLoopJoin {
 export class HashJoin {
   left: Nodeq | undefined;
   right: Nodeq | undefined;
+  child: Nodeq | null = null;
+
   hashKeyLeft: (r: row) => column;
   hashKeyRight: (r: row) => column;
 
@@ -267,18 +272,19 @@ export class HashJoin {
 }
 
 export class MergeJoin {
-  left: Nodeq | undefined;
-  right: Nodeq | undefined;
+  left: Nodeq | null = null;
+  right: Nodeq | null = null;
+  child: Nodeq | null = null;
+
   sortKeyLeft: (r: row) => column;
   sortKeyRight: (r: row) => column;
 
-  leftTable: row[] = [];
-  rightTable: row[] = [];
+  leftRow: row | null = null;
+  rightRow: row | null = null;
 
-  leftIdx: number = 0;
-  rightIdx: number = 0;
-
-  rightDone: boolean = true;
+  buf: row[] = [];
+  bidx: number = 0;
+  mode: string = "fetch";
 
   constructor(
     left: Nodeq,
@@ -293,62 +299,51 @@ export class MergeJoin {
   }
 
   async next(): Promise<row | null> {
-    if (this.leftTable.length === 0) await this.init();
+    if (!this.leftRow) {
+      this.leftRow = (await this.left?.next()) as row | null;
+      if (!this.leftRow) return null;
+    }
 
-    const leftRow = this.leftTable[this.leftIdx];
-    const rightRow = this.rightTable[this.rightIdx];
+    if (this.mode === "fetch") {
+      this.rightRow = (await this.right?.next()) as row | null;
+    }
 
-    if (!leftRow || !rightRow) return null;
+    if (this.mode === "branch" && this.bidx < this.buf.length) {
+      console.log("branch");
+      const right = this.buf[this.bidx];
+      this.bidx++;
+      return [...this.leftRow, ...right];
+    }
 
-    const leftKey = this.sortKeyLeft(leftRow);
-    const rightKey = this.sortKeyRight(rightRow);
+    if (
+      this.leftRow &&
+      this.rightRow &&
+      this.sortKeyLeft(this.leftRow) === this.sortKeyRight(this.rightRow)
+    ) {
+      this.buf.push(this.rightRow);
+      return [...this.leftRow, ...this.rightRow];
+    }
 
-    if (leftKey === rightKey) {
-      this.rightIdx++;
-      return [...leftRow, ...rightRow];
+    const leftRow = (await this.left?.next()) as row | null;
+    if (leftRow === null) return null;
+
+    this.bidx = 0;
+    if (this.sortKeyLeft(leftRow) === this.sortKeyLeft(this.leftRow)) {
+      this.mode = "branch";
     } else {
-      this.leftIdx++;
+      this.buf = [];
+      this.mode === "fetch";
+      this.leftRow = leftRow;
       if (
-        this.leftTable[this.leftIdx] &&
-        leftKey === this.sortKeyLeft(this.leftTable[this.leftIdx])
-      ) {
-        // back track right table when the next left is the same as previous left
-        let i = this.rightIdx - 1;
-        while (i > 0) {
-          if (this.sortKeyRight(this.rightTable[i]) == leftKey) {
-            i--;
-          } else {
-            break;
-          }
-        }
-        this.rightIdx = i;
-      }
-      return await this.next();
-    }
-  }
-
-  private async init() {
-    let row;
-    while ((row = await this.left?.next())) {
-      this.leftTable.push(row);
-    }
-    while ((row = await this.right?.next())) {
-      this.rightTable.push(row);
+        this.leftRow &&
+        this.rightRow &&
+        this.sortKeyLeft(this.leftRow) === this.sortKeyRight(this.rightRow)
+      )
+        return [...this.leftRow, ...this.rightRow];
     }
 
-    this.sort(this.leftTable, this.sortKeyLeft);
-    this.sort(this.rightTable, this.sortKeyRight);
-  }
-
-  private sort(table: row[], sortKey: (r: row) => column) {
-    table.sort((a, b) => {
-      const fieldA = sortKey(a);
-      const fieldB = sortKey(b);
-
-      if (fieldA < fieldB) return -1;
-      if (fieldA > fieldB) return 1;
-      return 0;
-    });
+    this.leftRow = leftRow;
+    return await this.next();
   }
 
   stop() {
@@ -366,9 +361,11 @@ export class MergeJoin {
 }
 
 export class MemoryScan {
-  idx: number;
   table: row[];
   schema: columnDefinition[] = [];
+  child: Nodeq | null = null;
+
+  idx: number;
   sorted: boolean = false;
 
   constructor(table: row[], schema: columnDefinition[]) {
@@ -394,7 +391,7 @@ export class MemoryScan {
 }
 
 export class Projection {
-  child: Nodeq | undefined;
+  child: Nodeq | null = null;
   fn: projectionFunction | undefined;
 
   constructor(fn: projectionFunction) {
@@ -423,7 +420,7 @@ export class Projection {
 }
 
 export class Count {
-  child: Nodeq | undefined;
+  child: Nodeq | null = null;
   done: boolean = false;
 
   async next(): Promise<row | null> {
@@ -440,12 +437,11 @@ export class Count {
 }
 
 export class Selection {
-  child: Nodeq | undefined;
+  child: Nodeq | null = null;
   predicate: selectionFunction;
 
-  constructor(predicate: selectionFunction, child?: Nodeq) {
+  constructor(predicate: selectionFunction) {
     this.predicate = predicate;
-    this.child = child;
   }
 
   async next(): Promise<row | null> {
@@ -475,7 +471,7 @@ export class Selection {
 }
 
 export class Limit {
-  child: Nodeq | undefined;
+  child: Nodeq | null = null;
   n: number;
   count: number;
 
@@ -509,14 +505,15 @@ export class Limit {
 }
 
 export class Sort {
-  colIdx: number = 0;
+  sortKey: (r: row) => column;
   sign: number = 1;
   child: Nodeq | undefined;
   sortedRows: row[] = [];
   idx: number = 0;
 
-  constructor(colIdx: number, desc: boolean = false) {
-    this.colIdx = colIdx;
+  constructor(sortKey: (r: row) => column, desc: boolean = false) {
+    console.log("sort constructor");
+    this.sortKey = sortKey;
     this.sign = desc ? 1 : -1;
   }
 
@@ -544,9 +541,8 @@ export class Sort {
 
   private sort() {
     this.sortedRows.sort((a, b) => {
-      const fieldA = a[this.colIdx];
-      const fieldB = b[this.colIdx];
-
+      const fieldA = this.sortKey(a);
+      const fieldB = this.sortKey(b);
       if (fieldA < fieldB) return this.sign * 1;
       if (fieldA > fieldB) return this.sign * -1;
       return 0;

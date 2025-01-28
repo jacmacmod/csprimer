@@ -223,7 +223,7 @@ Deno.test("inMemory", async (t) => {
       Q([
         new Projection((r) => [r[0], r[2]]),
         new Limit(3),
-        new Sort(2, true),
+        new Sort((r: row) => r[2], true),
         new MemoryScan(birds, birdSchema),
       ])
     );
@@ -331,13 +331,10 @@ Deno.test("NestedLoopJoin", async (t) => {
   });
 
   await t.step("select before join", async () => {
+    const selection = new Selection((r) => r[1] === "b");
+    selection.child = new MemoryScan(tableA, schema);
     const gen = run(
-      Q([
-        new NestedLoopJoin(
-          new Selection((r) => r[1] === "b", new MemoryScan(tableA, schema)),
-          new MemoryScan(tableA, schema)
-        ),
-      ])
+      Q([new NestedLoopJoin(selection, new MemoryScan(tableA, schema))])
     );
 
     const result = [];
@@ -544,22 +541,29 @@ Deno.test("MergeJoin", async (t) => {
         type: "float64",
       },
     ];
-    const left = [
+
+    const users = [
       [2, "bar"],
       [1, "foo"],
     ];
 
-    const right = [
+    const payments = [
       [1, 2, 0.5],
       [2, 1, 0.7],
       [3, 2, 0.9],
     ];
 
+    const left = new Sort((r) => r[0]);
+    left.child = new MemoryScan(users, userSchema);
+
+    const right = new Sort((r) => r[1]);
+    right.child = new MemoryScan(payments, paymentSchema);
+
     const gen = run(
       Q([
         new MergeJoin(
-          new MemoryScan(left, userSchema),
-          new MemoryScan(right, paymentSchema),
+          left,
+          right,
           (r: row) => r[0],
           (r: row) => r[1]
         ),
@@ -570,7 +574,8 @@ Deno.test("MergeJoin", async (t) => {
     for await (const value of gen) {
       result.push(value);
     }
-
+    console.log(result)
+    
     assertArrayIncludes(result[0], [1, "foo", 2, 1, 0.7]);
     assertArrayIncludes(result[1], [2, "bar", 1, 2, 0.5]);
     assertArrayIncludes(result[2], [2, "bar", 3, 2, 0.9]);
@@ -612,16 +617,24 @@ Deno.test("MergeJoin", async (t) => {
       [3, 1, "baz"],
     ];
 
+
     const right = [
       [1, 1, 0.2],
       [2, 1, 0.3],
       [3, 3, 0.4],
     ];
+
+    const leftRelation = new Sort((r: row) => r[1]);
+    leftRelation.child = new MemoryScan(left, userSchema);
+
+    const rightRelation = new Sort((r: row) => r[1]);
+    rightRelation.child = new MemoryScan(right, paymentSchema);
+
     const gen = run(
       Q([
         new MergeJoin(
-          new MemoryScan(left, userSchema),
-          new MemoryScan(right, paymentSchema),
+          leftRelation,
+          rightRelation,
           (r: row) => r[1],
           (r: row) => r[1]
         ),
@@ -632,7 +645,7 @@ Deno.test("MergeJoin", async (t) => {
     for await (const value of gen) {
       result.push(value);
     }
-
+    console.log(result)
     assertArrayIncludes(result[0], [2, 1, "bar", 1, 1, 0.2]);
     assertArrayIncludes(result[1], [2, 1, "bar", 2, 1, 0.3]);
     assertArrayIncludes(result[2], [3, 1, "baz", 1, 1, 0.2]);
