@@ -19,6 +19,7 @@ import {
   NestedLoopJoin,
   HashJoin,
   MergeJoin,
+  Aggregate,
 } from "./nodes.ts";
 import { CsvParseStream } from "jsr:@std/csv";
 import { createTable } from "./util.ts";
@@ -574,8 +575,8 @@ Deno.test("MergeJoin", async (t) => {
     for await (const value of gen) {
       result.push(value);
     }
-    console.log(result)
-    
+    console.log(result);
+
     assertArrayIncludes(result[0], [1, "foo", 2, 1, 0.7]);
     assertArrayIncludes(result[1], [2, "bar", 1, 2, 0.5]);
     assertArrayIncludes(result[2], [2, "bar", 3, 2, 0.9]);
@@ -617,7 +618,6 @@ Deno.test("MergeJoin", async (t) => {
       [3, 1, "baz"],
     ];
 
-
     const right = [
       [1, 1, 0.2],
       [2, 1, 0.3],
@@ -645,12 +645,139 @@ Deno.test("MergeJoin", async (t) => {
     for await (const value of gen) {
       result.push(value);
     }
-    console.log(result)
+    console.log(result);
     assertArrayIncludes(result[0], [2, 1, "bar", 1, 1, 0.2]);
     assertArrayIncludes(result[1], [2, 1, "bar", 2, 1, 0.3]);
     assertArrayIncludes(result[2], [3, 1, "baz", 1, 1, 0.2]);
     assertArrayIncludes(result[3], [3, 1, "baz", 2, 1, 0.3]);
   });
+});
+
+Deno.test.only("Aggregation", async (t) => {
+  const userSchema: columnDefinition[] = [
+    {
+      name: "a",
+      type: "int",
+    },
+    {
+      name: "b",
+      type: "text",
+    },
+  ];
+
+  const table = [
+    [1, 2],
+    [1, 4],
+    [2, 5],
+  ];
+
+  await t.step("min -- memory scan", async () => {
+    const aggFunc = (cur: any, r: any) => {
+      if (!cur) return r[1]
+      if (r[1] < cur) return r[1];
+      return cur;
+    };
+    
+    const gen = run(
+      Q([
+        new Aggregate((r) => r[0], aggFunc),
+        new MemoryScan(table, userSchema),
+      ])
+    );
+    
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+    }
+
+    assertArrayIncludes(result[0], [1, 2]);
+    assertArrayIncludes(result[1], [2, 5]);
+  });
+  await t.step("max -- memory scan", async () => {
+    const aggFunc = (cur: any, r: any) => {
+      if (!cur) return r[1]
+      if (r[1] > cur) return r[1];
+      return cur;
+    };
+    const gen = run(
+      Q([
+        new Aggregate((r) => r[0], aggFunc),
+        new MemoryScan(table, userSchema),
+      ])
+    );
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+    }
+
+    assertArrayIncludes(result[0], [1, 4]);
+    assertArrayIncludes(result[1], [2, 5]);
+  });
+
+  await t.step("sum -- memory scan", async () => {
+    const aggFunc = (total: any, r: any) => total + r[1];
+    const gen = run(
+      Q([
+        new Aggregate((r) => r[0], aggFunc),
+        new MemoryScan(table, userSchema),
+      ])
+    );
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+    }
+
+    assertArrayIncludes(result[0], [1, 6]);
+    assertArrayIncludes(result[1], [2, 5]);
+  });
+
+  await t.step("average -- memory scan", async () => {
+    const aggFunc = (total: any, r: any) => total + r[1];
+    const aggFinalFunc = (total: any, count: any) => total / count;
+    const gen = run(
+      Q([
+        new Aggregate((r) => r[0], aggFunc, aggFinalFunc),
+        new MemoryScan(table, userSchema),
+      ])
+    );
+    const result = [];
+    for await (const value of gen) {
+      result.push(value);
+    }
+
+    assertArrayIncludes(result[0], [1, 3]);
+    assertArrayIncludes(result[1], [2, 5]);
+  });
+
+  // await t.step("average rating -- movielens", async () => {
+  //   const movies = new Sort((r: row) => r[0]);
+  //   movies.child = new DataFileScan("movies", defaultPageSize, "tables");
+  //   const ratings = new Sort((r: row) => r[1]);
+  //   ratings.child = new DataFileScan("ratings", defaultPageSize, "tables");
+  //   const gen = run(
+  //     Q([
+  //       new Limit(10),
+  //       new Aggregate(
+  //         (r) => r[1],
+  //         (r) => r[5]
+  //       ),
+  //       // new Projection((r) => [r[0], r[1], r[4]]),
+  //       new MergeJoin(
+  //         movies,
+  //         ratings,
+  //         (r: row) => r[0],
+  //         (r: row) => r[1]
+  //       ),
+  //     ])
+  //   );
+
+  //   let i = 0;
+  //   for await (const value of gen) {
+  //     console.log(value);
+  //     // assertArrayIncludes(value, expectations[i]);
+  //     i++;
+  //   }
+  // });
 });
 
 const testColumns: columnDefinition[] = [

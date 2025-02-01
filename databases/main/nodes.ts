@@ -5,6 +5,16 @@ import { columnDefinition, getSchema } from "./util.ts";
 
 export type selectionFunction = (r: row) => boolean;
 export type projectionFunction = (r: row) => row;
+
+// export type minFunc = (x: column, y: column) => column;
+// export type maxFunc = minFunc;
+// export type avgFunc = (r: row, total: number) => Array<number>;
+// export type sumFunc = (c: number) => number;
+
+// export type aggFunc = minFunc | maxFunc | avgFunc | sumFunc;
+export type aggFunc = (x: column, y: column) => column;
+export type aggFinalFunc = (a: number, b: number) => number;
+
 export type Nodeq =
   | MergeJoin
   | NestedLoopJoin
@@ -16,7 +26,8 @@ export type Nodeq =
   | Limit
   | Projection
   | Count
-  | Selection;
+  | Selection
+  | Aggregate;
 
 export class DataFileScan {
   table: string;
@@ -192,6 +203,71 @@ export class NestedLoopJoin {
   }
 }
 
+export class Aggregate {
+  child: Nodeq | null = null;
+
+  group: (r: row) => column;
+  agg: any;
+  finalFunc: any;
+  key: column | undefined = undefined;
+
+  state: null | string | number= null;
+  count: number =  0 ;
+  done: boolean = false;
+
+  constructor(
+    group: (r: row) => column,
+    agg: any,
+    finalFunc?: any
+  ) {
+    this.group = group;
+    this.agg = agg;
+    this.finalFunc = finalFunc;
+  }
+  // max min sum count avg
+  async next(): Promise<row | null> {
+    if (this.done) return null;
+
+    while (true) {
+      const row = await this.child?.next();
+      if (!row) {
+        if (this.key) {
+          this.done = true;
+          if (this.finalFunc) {
+            return [this.key, this.finalFunc(this.state, this.count)];
+          }
+          return [this.key, this.state as string | number];
+        }
+        return null;
+      }
+
+      if (this.key !== undefined && this.group(row) !== this.key) {
+        let result;
+        if (this.finalFunc) {
+          result = [this.key, this.finalFunc(this.state, this.count)];
+        } else {
+          result = [this.key, this.state as string | number];
+        }
+        if (typeof this.state === "number") {
+          this.state = 0;
+        } else {
+          this.state = ""
+        }
+        this.state = this.agg(this.state, row);
+        this.key = this.group(row);
+        this.count = 1;
+        return result;
+      }
+      
+      this.key = this.group(row);
+      this.state = this.agg(this.state, row);
+      this.count++;
+    }
+  }
+
+  stop() {}
+  reset() {}
+}
 // InnerJoin
 export class HashJoin {
   left: Nodeq | undefined;
@@ -512,7 +588,6 @@ export class Sort {
   idx: number = 0;
 
   constructor(sortKey: (r: row) => column, desc: boolean = false) {
-    console.log("sort constructor");
     this.sortKey = sortKey;
     this.sign = desc ? 1 : -1;
   }
