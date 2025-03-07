@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include <sys/wait.h>
+#include <signal.h>
 #include <unistd.h>
 #ifndef TIOCGWINSZ
 #include <sys/ioctl.h>
@@ -8,44 +8,47 @@
 #include "stb_image.h"
 #define STB_IMAGE_RESIZE_IMPLEMENTATION
 #include "stb_image_resize2.h"
+//https://www.restack.io/p/ai-ascii-art-tools-comparison-answer-c-code-ascii-art-cat-ai
+volatile sig_atomic_t resized = 0;
 
-static void sig_winch(int);
-static void draw();
+void draw();
 char get_ascii_char(int);
 
-int main(void)
-{
-  // draw();
-  if (signal(SIGWINCH, sig_winch) == SIG_ERR)
-  {
-    printf("signal error");
-  }
-  for (;;)
-    ;
-}
+void handler(int sig) { resized = 1; }
 
-static void sig_winch(int sig_no) { draw(); }
+int main(int argc, char *argv[])
+{
+  struct sigaction sa;
+  sa.sa_handler = handler;
+  sigaction(SIGWINCH, &sa, NULL);
+  draw();
+
+  for (;;)
+  {
+    if (resized)
+    {
+      draw();
+      resized = 0;
+    }
+  }
+}
 
 void draw()
 {
-  struct winsize size;
-
-  int fd = STDIN_FILENO;
-  if (ioctl(fd, TIOCGWINSZ, (char *)&size) < 0)
-    printf("TIOCSGWINSZ error");
-  printf("%d rows, %d columns\n", size.ws_row, size.ws_col);
-  // printf("\033[H\033[J");
+  struct winsize ws;
+  ioctl(0, TIOCGWINSZ, &ws);
   int w, h, channels;
 
-  unsigned char *img_data = stbi_load("/Users/jack/csprimer/os/proc/img.png",
+  unsigned char *img_data = stbi_load("/Users/jack/csprimer/os/proc/gpt.png",
                                       &w, &h, &channels, 0);
   if (img_data == NULL)
   {
     printf("Error in loading the image\n");
   }
+
   int sw, sh;
-  sw = size.ws_row;
-  sh = size.ws_col;
+  sw = ws.ws_col;
+  sh = ws.ws_row;
   unsigned char *img_data_scaled = (unsigned char *)malloc(sw * sh * channels);
 
   stbir_resize_uint8_srgb(img_data, w, h, 0,
@@ -57,7 +60,6 @@ void draw()
     exit(1);
   }
 
-  // printf("%d x %d --> %d x %d\n", w, h, sw, sh);
   for (int y = 0; y < sh; y++)
   {
     for (int x = 0; x < sw; x++)
@@ -68,6 +70,7 @@ void draw()
     }
     putchar('\n');
   }
+  printf("\n\n%d x %d --> %d x %d\n", w, h, sw, sh);
   stbi_image_free(img_data);
   free(img_data_scaled);
 }

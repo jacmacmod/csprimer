@@ -3,3 +3,13 @@
 */ml-20m/*.csv
 *.zip
 oz_answers/
+.fuse
+
+# Object files
+*.o
+*.out
+*.a
+*.so
+*stb*.h
+a.out
+.vscode

@@ -1,5 +1,8 @@
 {
   "files.associations": {
-    "stb_image.h": "c"
+    "stb_image.h": "c",
+    "unistd.h": "c",
+    "stb_image_resize2.h": "c",
+    "signal.h": "c"
   }
 }
