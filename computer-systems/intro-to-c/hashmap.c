@@ -9,36 +9,30 @@
 
 typedef uint32_t Hash;
 
-typedef struct LNode {
+typedef struct LNode
+{
     char *key;
     void *value;
     Hash hash;
     struct LNode *next;
 } LNode;
 
-typedef struct Hashmap {
+typedef struct Hashmap
+{
     LNode **buckets;
     int num_buckets;
 } Hashmap;
 
-Hashmap* Hashmap_new(void) {
-    Hashmap* h = malloc(sizeof(Hashmap));
+Hashmap *Hashmap_new(void)
+{
+    Hashmap *h = malloc(sizeof(Hashmap));
     h->buckets = calloc(STARTING_BUCKETS, sizeof(LNode));
     h->num_buckets = STARTING_BUCKETS;
     return h;
 }
 
-// Hash hash(const char *s) {
-// long sum;
-// int n;
-// for (int n = 0; *s != '\0'; s++) {
-//     sum = sum + s[n];
-// }
-// int modded = (int)(sum % (long)8);
-// return modded;
-//
-
-Hash hash2(const char *s) {
+Hash hash2(const char *s)
+{
     Hash h = 8351;
     char ch;
     while ((ch = *s++))
@@ -46,17 +40,20 @@ Hash hash2(const char *s) {
     return h;
 }
 
-void Hashmap_set(Hashmap *h, char *key, void *x) {
+void Hashmap_set(Hashmap *h, char *key, void *x)
+{
     Hash hash = hash2(key);
     int idx = hash % h->num_buckets;
 
     LNode *next = h->buckets[idx];
-    while (next != NULL) {
-        if (next->hash == hash && strncmp(next->key, key, MAX_KEY_SIZE) == 0) {
+    while (next != NULL)
+    {
+        if (next->hash == hash && strncmp(next->key, key, MAX_KEY_SIZE) == 0)
+        {
             next->value = x;
             return;
         }
-       next = next->next;
+        next = next->next;
     }
 
     // Add node to head of Linked List
@@ -68,12 +65,15 @@ void Hashmap_set(Hashmap *h, char *key, void *x) {
     h->buckets[idx] = newLL;
 }
 
-void* Hashmap_get(Hashmap *h, char *key) {
+void *Hashmap_get(Hashmap *h, char *key)
+{
     Hash hash = hash2(key);
     LNode *ll = h->buckets[hash % h->num_buckets];
 
-    while (ll != NULL) {
-        if (ll->hash == hash && strncmp(ll->key, key, MAX_KEY_SIZE) == 0) {
+    while (ll != NULL)
+    {
+        if (ll->hash == hash && strncmp(ll->key, key, MAX_KEY_SIZE) == 0)
+        {
             return ll->value;
         }
         ll = ll->next;
@@ -81,23 +81,25 @@ void* Hashmap_get(Hashmap *h, char *key) {
     return NULL;
 }
 
-void Hashmap_delete(Hashmap *h, char *key) {
+void Hashmap_delete(Hashmap *h, char *key)
+{
     Hash hash = hash2(key);
     int idx = hash % h->num_buckets;
     LNode *currll = h->buckets[idx];
     LNode *prevll = NULL;
 
-    while (currll != NULL) {
-        if (currll->hash == hash && strncmp(currll->key, key, MAX_KEY_SIZE) == 0) {
-            // free(currll->key);
-            // prevll->next = currll->next;
-            // free(currll);
-            // return;
+    while (currll != NULL)
+    {
+        if (currll->hash == hash && strncmp(currll->key, key, MAX_KEY_SIZE) == 0)
+        {
             free(currll->key);
-            if (prevll == NULL) {
+            if (prevll == NULL)
+            {
                 // We are at the head of the list
                 currll = currll->next; // Update head
-            } else {
+            }
+            else
+            {
                 prevll->next = currll->next; // Bypass the current node
             }
             free(currll); // Free the current node
@@ -108,11 +110,14 @@ void Hashmap_delete(Hashmap *h, char *key) {
     }
 }
 
-void Hashmap_free(Hashmap *h) {
+void Hashmap_free(Hashmap *h)
+{
     LNode *ll, *prevll;
-    for (int i = 0; i < h->num_buckets; i++) {
+    for (int i = 0; i < h->num_buckets; i++)
+    {
         ll = h->buckets[i];
-        while (ll != NULL) {
+        while (ll != NULL)
+        {
             prevll = ll;
             free(prevll->key);
             free(prevll);
@@ -123,51 +128,54 @@ void Hashmap_free(Hashmap *h) {
     free(h);
 }
 
-int main() {
-  Hashmap *h = Hashmap_new();
+int main()
+{
+    Hashmap *h = Hashmap_new();
 
-  // basic get/set functionality
-  int a = 5;
-  float b = 7.2;
-  Hashmap_set(h, "item a", &a);
-  Hashmap_set(h, "item b", &b);
-  assert(Hashmap_get(h, "item a") == &a);
-  assert(Hashmap_get(h, "item b") == &b);
+    // basic get/set functionality
+    int a = 5;
+    float b = 7.2;
+    Hashmap_set(h, "item a", &a);
+    Hashmap_set(h, "item b", &b);
+    assert(Hashmap_get(h, "item a") == &a);
+    assert(Hashmap_get(h, "item b") == &b);
 
-  // using the same key should override the previous value
-  int c = 20;
-  Hashmap_set(h, "item a", &c);
-  assert(Hashmap_get(h, "item a") == &c);
+    // using the same key should override the previous value
+    int c = 20;
+    Hashmap_set(h, "item a", &c);
+    assert(Hashmap_get(h, "item a") == &c);
 
-  // basic delete functionality
-  Hashmap_delete(h, "item a");
-  assert(Hashmap_get(h, "item a") == NULL);
+    // basic delete functionality
+    Hashmap_delete(h, "item a");
+    assert(Hashmap_get(h, "item a") == NULL);
 
-  // handle collisions correctly
-  // note: this doesn't necessarily test expansion
-  int i, n = STARTING_BUCKETS * 10, ns[n];
-  char key[MAX_KEY_SIZE];
-  for (i = 0; i < n; i++) {
-    ns[i] = i;
-    sprintf(key, "item %d", i);
-    Hashmap_set(h, key, &ns[i]);
-  }
-  for (i = 0; i < n; i++) {
-    sprintf(key, "item %d", i);
-    assert(Hashmap_get(h, key) == &ns[i]);
-  }
+    // handle collisions correctly
+    // note: this doesn't necessarily test expansion
+    int i, n = STARTING_BUCKETS * 10, ns[n];
+    char key[MAX_KEY_SIZE];
+    for (i = 0; i < n; i++)
+    {
+        ns[i] = i;
+        sprintf(key, "item %d", i);
+        Hashmap_set(h, key, &ns[i]);
+    }
+    for (i = 0; i < n; i++)
+    {
+        sprintf(key, "item %d", i);
+        assert(Hashmap_get(h, key) == &ns[i]);
+    }
 
-  Hashmap_free(h);
-  /*
-     stretch goals:
-     - expand the underlying array if we start to get a lot of collisions
-     - support non-string keys
-     - try different hash functions
-     - switch from chaining to open addressing
-     - use a sophisticated rehashing scheme to avoid clustered collisions
-     - implement some features from Python dicts, such as reducing space use,
-     maintaing key ordering etc. see https://www.youtube.com/watch?v=npw4s1QTmPg
-     for ideas
-     */
-  printf("ok\n");
+    Hashmap_free(h);
+    /*
+       stretch goals:
+       - expand the underlying array if we start to get a lot of collisions
+       - support non-string keys
+       - try different hash functions
+       - switch from chaining to open addressing
+       - use a sophisticated rehashing scheme to avoid clustered collisions
+       - implement some features from Python dicts, such as reducing space use,
+       maintaing key ordering etc. see https://www.youtube.com/watch?v=npw4s1QTmPg
+       for ideas
+       */
+    printf("ok\n");
 }

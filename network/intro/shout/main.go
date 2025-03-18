@@ -9,7 +9,7 @@ import (
 
 func main() {
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
-	if err != nil {
+	  if err != nil {
 		log.Fatal(err)
 	}
 	port := 8888
