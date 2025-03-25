@@ -13,3 +13,4 @@ oz_answers/
 *stb*.h
 a.out
 .vscode
+a.out.dSYM/*

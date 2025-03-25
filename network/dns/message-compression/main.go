@@ -10,10 +10,44 @@ import (
 	"syscall"
 )
 
-const dnsPort = 53
-const bufferSize = 4096
+const (
+	dnsPort    = 53
+	bufferSize = 4096
+)
 
-var googleHost = [4]byte{8, 8, 8, 8}
+var (
+	googleHost = [4]byte{8, 8, 8, 8}
+
+	class = "IN"
+
+	typesMap = map[string]int{
+		"A":     1,
+		"NS":    2,
+		"CNAME": 5,  // canonical name for an alias
+		"SOA":   6,  // start of zone ability
+		"WKS":   11, // well known service descriptor
+		"PTR":   12,
+		"HINFO": 13,
+		"MINFO": 14,
+		"MX":    15,
+		"TXT":   16,
+	}
+
+	opcodeMap = map[int]string{
+		0: "QUERY",
+		1: "IQUERY",
+		2: "STATUS",
+	}
+
+	rcodeMap = map[int]string{
+		0: "NOERROR",
+		1: "FORMATERROR",
+		2: "SERVERERROR",
+		3: "NAMERERROR",
+		4: "NOTIMPLEMENTED",
+		5: "REFUSED",
+	}
+)
 
 type DNSClient struct {
 	address     syscall.SockaddrInet4
@@ -23,18 +57,25 @@ type DNSClient struct {
 }
 
 func main() {
-	url := os.Args[1]
+	url, rrtype := os.Args[1], "A"
+	if len(os.Args) > 2 {
+		rrtype = os.Args[2]
+		if rrtype != "A" && rrtype != "NS" {
+			log.Fatalln("type not supported")
+		}
+	}
 
 	dnsClient := newDNSClient(googleHost)
 	dnsClient.createSocket()
 	defer dnsClient.closeSocket()
 
-	query, question, xid := prepareRequest(url)
+	query, xid := prepareQuery(url, rrtype)
 	dnsClient.SendRequest(query)
 
 	for {
 		n := dnsClient.ReceiveMsg()
 
+		fmt.Println("bytes received", n)
 		if dnsClient.fromAddress.Addr != googleHost {
 			continue
 		}
@@ -50,12 +91,18 @@ func main() {
 	}
 
 	validateResponse(dnsClient.data)
-	printAnswer(dnsClient.data, question)
+	printResponse(dnsClient.data)
 }
 
 func newDNSClient(host [4]byte) DNSClient {
 	r := make([]byte, bufferSize)
-	return DNSClient{address: syscall.SockaddrInet4{Port: dnsPort, Addr: host}, data: r}
+	return DNSClient{
+		address: syscall.SockaddrInet4{
+			Port: dnsPort,
+			Addr: host,
+		},
+		data: r,
+	}
 }
 
 func (d *DNSClient) createSocket() {
@@ -91,7 +138,7 @@ func (d *DNSClient) ReceiveMsg() int {
 	return n
 }
 
-func prepareRequest(url string) ([]byte, []byte, int) {
+func prepareQuery(url string, rrtype string) ([]byte, int) {
 	xid, flags := rand.Intn(65535), 0x0100 // recursive
 
 	query := make([]byte, 12)
@@ -100,71 +147,128 @@ func prepareRequest(url string) ([]byte, []byte, int) {
 	binary.BigEndian.PutUint16(query[4:6], uint16(1))
 
 	// Question
-	question := []byte{}
-	for _, u := range strings.Split(url, ".") {
-		question = append(question, uint8(len(u)))
-		question = append(question, []byte(u)...)
-	}
+	qname, qtype, qclass := []byte{}, make([]byte, 2), []byte{0, 1}
 
-	question = append(question, []byte{0x00, 0x00, 0x01, 0x00, 0x01}...) //end sequence
-	query = append(query, question...)
-	return query, question, xid
+	binary.BigEndian.PutUint16(qtype, uint16(typesMap[rrtype]))
+
+	for _, u := range strings.Split(url, ".") {
+		qname = append(qname, uint8(len(u)))
+		qname = append(qname, []byte(u)...)
+	}
+	qname = append(qname, uint8(0))
+
+	query = append(query, qname...)
+	query = append(query, qtype...)
+	query = append(query, qclass...)
+
+	return query, xid
 }
 
-func validateResponse(b []byte) {
-	if (b[2]&0x80)>>7 != 1 {
+func validateResponse(p []byte) {
+	if (p[2]&0x80)>>7 != 1 {
 		log.Fatalln("QR must be 1")
 	}
 
-	if (b[3]&0x70)>>4 != 0 {
-		log.Fatalln("unexpected z value", (b[3]&0x70)>>4)
+	if (p[3]&0x70)>>4 != 0 {
+		log.Fatalln("unexpected z value", (p[3]&0x70)>>4)
 	}
 }
 
-func printAnswer(b []byte, question []byte) {
+func readName(p []byte, offset int) ([]string, int, int) {
+	labels, i, ptr := []string{}, offset, 0
+
+	for {
+		ll := int(p[i])
+		if ll == 0 {
+			i++
+			break
+		}
+
+		if p[i]&0xC0 > 0 {
+			ptr = int(p[i+1])
+			i += 2
+			break
+		}
+		labels = append(labels, string(p[i+1:i+1+ll]))
+		i += ll + 1
+	}
+
+	return labels, i, ptr
+}
+
+func printResponse(p []byte) {
+	i := 0
 	fmt.Println(";; Got answer")
-	printHeader(b)
-	printIP(b, question)
-}
+	xid, aa, rcode, opcode := binary.BigEndian.Uint16(p[0:2]), p[2]&0x04, p[3]&0x10, (p[2]&0x78)>>3
 
-func printIP(b []byte, q []byte) {
-	offset := len(q) + 24
-	fmt.Printf("IP %d.%d.%d.%d\n", b[offset], b[offset+1], b[offset+2], b[offset+3])
-}
-
-func printHeader(b []byte) {
-	id, aa, rcode, opcode := binary.BigEndian.Uint16(b[0:2]), b[2]&0x04, b[3]&0x10, (b[2]&0x78)>>3
-
-	opcodeMap := map[int]string{
-		0: "QUERY",
-		1: "IQUERY",
-		2: "STATUS",
-	}
-
-	rcodeMap := map[int]string{
-		0: "NOERROR",
-		1: "FORMATERROR",
-		2: "SERVERERROR",
-		3: "NAMERERROR",
-		4: "NOTIMPLEMENTED",
-		5: "REFUSED",
-	}
-
-	fmt.Printf(";; --HEADER-- opcode: %s, status: %s, id: %d\n", opcodeMap[int(opcode)], rcodeMap[int(rcode)], id)
-	printFlags(b)
+	fmt.Printf(";; --HEADER-- opcode: %s, status: %s, id: %d\n", opcodeMap[int(opcode)], rcodeMap[int(rcode)], xid)
+	printFlags(p)
 
 	if aa != 0 {
 		aa = 1
 	}
-
 	fmt.Printf(" AA: %d\n", aa)
 
+	qdcount := binary.BigEndian.Uint16(p[4:6])
+	ancount := binary.BigEndian.Uint16(p[6:8])
+	nscount := binary.BigEndian.Uint16(p[8:10])
+	arcount := binary.BigEndian.Uint16(p[10:12])
+
 	fmt.Printf(";; QDCOUNT: %d ANCOUNT: %d NSCOUNT: %d ARCOUNT: %d\n\n",
-		binary.BigEndian.Uint16(b[4:6]),
-		binary.BigEndian.Uint16(b[6:8]),
-		binary.BigEndian.Uint16(b[8:10]),
-		binary.BigEndian.Uint16(b[10:12]),
-	)
+		qdcount, ancount, nscount, arcount)
+
+	qname, i, _ := readName(p, 12)
+	fmt.Println(";; QUESTION SECTION")
+	name := strings.Join(qname, ".")
+	qtype := binary.BigEndian.Uint16(p[i : i+2])
+	i += 2
+
+	qclass := binary.BigEndian.Uint16(p[i : i+2])
+	i += 2
+
+	if qclass != 1 {
+		log.Fatalln("invalid Class, must be 1", qclass)
+	}
+
+	fmt.Printf("%6s. %6s %6s \n\n", name, "IN", getQtype(int(qtype)))
+
+	ancounter := 0
+
+	fmt.Println(";; ANSWER")
+	for ancounter < int(ancount) {
+		labels, ptr := []string{}, 0
+		i += 6 // skip name pointer, type and class
+		ttl := binary.BigEndian.Uint32(p[i : i+4])
+		i += 4
+
+		dl := binary.BigEndian.Uint16(p[i : i+2])
+		i += 2
+		// ARPA 4 byte IPV4
+		if int(dl) == 4 {
+			fmt.Printf("%6s. %d %6s %6s %d.%d.%d.%d\n", name, ttl, "IN", getQtype(int(qtype)), p[i], p[i+1], p[i+2], p[i+3])
+			break
+		}
+
+		// first sequence is a pointer 11--------
+		if p[i]&0xC0 > 0 {
+			labels, i, _ = readName(p, int(p[i+1]))
+			i += 2
+		} else {
+			// regular sequence ending in 0 octect with no message compression
+			labels, i, ptr = readName(p, i)
+
+			// terminated by pointer
+			if ptr > 0 {
+				sublabels := []string{}
+				sublabels, _, _ = readName(p, ptr)
+				labels = append(labels, sublabels...)
+			}
+		}
+
+		fmt.Printf("%6s %6d %6s %6s %20s\n", name+".", ttl, "IN", getQtype(int(qtype)), strings.Join(labels, ".")+".")
+
+		ancounter++
+	}
 }
 
 func printFlags(b []byte) {
@@ -192,4 +296,14 @@ func printFlags(b []byte) {
 	}
 
 	fmt.Printf("; ")
+}
+
+func getQtype(i int) string {
+	for k, v := range typesMap {
+		if v == i {
+			return k
+		}
+	}
+	log.Fatal("invalid qtype")
+	return ""
 }
