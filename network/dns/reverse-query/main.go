@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/binary"
+	"flag"
 	"fmt"
 	"log"
 	"math/rand"
@@ -64,16 +65,23 @@ func main() {
 		log.Fatalln("no url or ip specified")
 	}
 
+	var ipAddress = flag.String("x", "", "ip address for reverse lookup")
+	flag.Parse()
+
 	url, rrtype := os.Args[1], "A"
 	if len(os.Args) > 2 {
 		rrtype = os.Args[2]
-		if rrtype != "A" && rrtype != "NS" {
+		if ipAddress == nil && rrtype != "A" && rrtype != "NS" && rrtype != "PTR" {
 			log.Fatalln("type not supported")
 		}
-	} else {
-		// check if it is ipv4
+	}
+
+	if *ipAddress != "" {
+		url = *ipAddress
 		if _, err := netip.ParseAddr(url); err == nil {
 			rrtype = "PTR"
+		} else {
+			log.Fatalln("invalid ip address")
 		}
 	}
 
@@ -172,34 +180,23 @@ func prepareQuery(url string, rrtype string) ([]byte, int) {
 	qname, qtype, qclass := []byte{}, make([]byte, 2), []byte{0, 1}
 
 	binary.BigEndian.PutUint16(qtype, uint16(typesMap[rrtype]))
-	// handle inverse query payload
-	// 157.240.3.35 -> 35.3.240.157.in-addr.arpa.
-	// for ip label
-	// go backwards label length then 33 35 33 32 34 30 etc
-	// for some reason three in front for the label
 
 	octets := strings.Split(url, ".")
 	if rrtype == "PTR" {
 		slices.Reverse(octets)
-		for _, octet := range octets {
-			qname = append(qname, uint8(len(octet)))
-			for _, c := range octet {
-				qname = append(qname, uint8(int(c)-'0')|0x30)
-			}
-		}
+	}
 
+	for _, o := range octets {
+		qname = append(qname, uint8(len(o)))
+		qname = append(qname, []byte(o)...)
+	}
+
+	if rrtype == "PTR" {
 		qname = append(qname, uint8(7))
 		qname = append(qname, []byte("in-addr")...)
 		qname = append(qname, uint8(4))
 		qname = append(qname, []byte("arpa")...)
-
-	} else {
-		for _, u := range octets {
-			qname = append(qname, uint8(len(u)))
-			qname = append(qname, []byte(u)...)
-		}
 	}
-
 	qname = append(qname, uint8(0))
 
 	query = append(query, qname...)
@@ -275,7 +272,7 @@ func printResponse(p []byte) {
 		log.Fatalln("invalid Class, must be 1", qclass)
 	}
 
-	fmt.Printf("%6s. %6s %6s \n\n", name, "IN", getQtype(int(qtype)))
+	fmt.Printf("%6s. %13s %6s \n\n", name, "IN", getQtype(int(qtype)))
 
 	ancounter := 0
 
@@ -290,7 +287,9 @@ func printResponse(p []byte) {
 		i += 2
 		// ARPA 4 byte IPV4
 		if int(dl) == 4 {
-			fmt.Printf("%6s. %d %6s %6s %d.%d.%d.%d\n", name, ttl, "IN", getQtype(int(qtype)), p[i], p[i+1], p[i+2], p[i+3])
+			ipaddr := netip.AddrFrom4([4]byte(p[i : i+4]))
+			fmt.Printf("%6s. %6d %6s %6s    %s\n",
+				name, ttl, "IN", getQtype(int(qtype)), ipaddr.String())
 			break
 		}
 
@@ -310,7 +309,7 @@ func printResponse(p []byte) {
 			}
 		}
 
-		fmt.Printf("%6s %6d %6s %6s %20s\n", name+".", ttl, "IN", getQtype(int(qtype)), strings.Join(labels, ".")+".")
+		fmt.Printf("%6s %6d %6s %6s    %s\n", name+".", ttl, "IN", getQtype(int(qtype)), strings.Join(labels, ".")+".")
 
 		ancounter++
 	}
