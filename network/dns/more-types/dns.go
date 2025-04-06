@@ -23,6 +23,7 @@ const (
 	MX    RType = 15
 	TXT   RType = 16
 	AAAA  RType = 28
+	OPT   RType = 41
 
 	IN RClass = 1
 	CS RClass = 2

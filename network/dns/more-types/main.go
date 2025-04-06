@@ -15,6 +15,11 @@ import (
 	"unicode/utf8"
 )
 
+type qtypeAndClass struct {
+	Qtype  uint16
+	Qclass uint16
+}
+
 func main() {
 	if len(os.Args) <= 1 {
 		log.Fatalln("no url or ip specified")
@@ -80,23 +85,28 @@ func main() {
 }
 
 func prepareQuery(url string, rrtype string) ([]byte, int) {
-	xid, flags := rand.Intn(65535), 0x0100 // recursive
-
-	query := make([]byte, 12)
-	binary.BigEndian.PutUint16(query[0:2], uint16(xid))
-	binary.BigEndian.PutUint16(query[2:4], uint16(flags))
-	binary.BigEndian.PutUint16(query[4:6], uint16(1))
-
-	// Question
-	qname, qtype, qclass := []byte{}, make([]byte, 2), []byte{0, 1}
-
-	binary.BigEndian.PutUint16(qtype, uint16(typeStringToInt(rrtype)))
+	xid, flags := rand.Intn(65535), 0x0100
+	var data struct {
+		XID        uint16
+		Flags      uint16
+		Questions  uint16
+		Answers    uint16
+		Authority  uint16
+		Additional uint16
+	}
+	buf := new(bytes.Buffer)
+	data.XID, data.Flags, data.Questions, data.Additional = uint16(xid), uint16(flags), 1, 1
+	if err := binary.Write(buf, binary.BigEndian, data); err != nil {
+		fmt.Println("binary.Write failed:", err)
+	}
+	query := buf.Bytes()
 
 	octets := strings.Split(url, ".")
 	if rrtype == "PTR" {
 		slices.Reverse(octets)
 	}
 
+	qname := []byte{}
 	for _, o := range octets {
 		qname = append(qname, uint8(len(o)))
 		qname = append(qname, []byte(o)...)
@@ -111,9 +121,32 @@ func prepareQuery(url string, rrtype string) ([]byte, int) {
 	qname = append(qname, uint8(0))
 
 	query = append(query, qname...)
-	query = append(query, qtype...)
-	query = append(query, qclass...)
 
+	buf = new(bytes.Buffer)
+	qtypeAndClassdataStruct := qtypeAndClass{Qtype: uint16(typeStringToInt(rrtype)), Qclass: uint16(IN)}
+	if err := binary.Write(buf, binary.BigEndian, qtypeAndClassdataStruct); err != nil {
+		fmt.Println("binary.Write failed:", err)
+	}
+
+	qtypeAndClass := buf.Bytes()
+	query = append(query, qtypeAndClass...)
+
+	var OPTRR struct {
+		Name  uint8
+		Type  uint16
+		Class uint16
+		TTL   uint32
+		Rdlen uint16
+	}
+
+	buf = new(bytes.Buffer)
+	OPTRR.Name, OPTRR.Type, OPTRR.Class, OPTRR.TTL, OPTRR.Rdlen = 0, uint16(OPT), uint16(bufferSize), 0, 0
+	if err := binary.Write(buf, binary.BigEndian, OPTRR); err != nil {
+		fmt.Println("binary.Write failed:", err)
+	}
+
+	optrr := buf.Bytes()
+	query = append(query, optrr...)
 	return query, xid
 }
 
@@ -186,10 +219,8 @@ func printResponse(p []byte) {
 
 	qname, i := readName(p, i)
 
-	var q2 struct {
-		Qtype  uint16
-		Qclass uint16
-	}
+	var q2 qtypeAndClass
+
 	r2 := bytes.NewReader(p[i : i+4])
 	if err := binary.Read(r2, binary.BigEndian, &q2); err != nil {
 		fmt.Println("binary.Read err:", err)
@@ -220,26 +251,24 @@ func printResponse(p []byte) {
 		nsIdx++
 	}
 
-	for arIdx := range q1.Arcount {
-		if arIdx == 0 {
-			fmt.Println(";; ADDITIONAL")
-		}
-		i = printRR(p, i)
+	// for arIdx := range q1.Arcount {
+	// 	if arIdx == 0 {
+	// 		fmt.Println(";; ADDITIONAL")
+	// 	}
+	// 	i = printRR(p, i)
 
-		arIdx++
-	}
+	// 	arIdx++
+	// }
 }
 
 func printRR(p []byte, i int) int {
 	recordName, i := readName(p, i)
-
 	var data struct {
 		RecordType  uint16
 		RecordClass uint16
 		RecordTTL   uint32
 		DataLength  uint16
 	}
-
 	r := bytes.NewReader(p[i : i+10])
 	if err := binary.Read(r, binary.BigEndian, &data); err != nil {
 		fmt.Println("binary.Read err: ", err)
