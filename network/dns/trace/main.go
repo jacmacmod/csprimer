@@ -16,23 +16,46 @@ import (
 	"unicode/utf8"
 )
 
-type qtypeAndClass struct {
-	Qtype  uint16
-	Qclass uint16
+func main() {
+	url, rtype, trace := parseArgs()
+	server := googleHost
+	// server = [4]byte{192, 112, 36, 4}
+	server = [4]byte{192, 58, 128, 30}
+	// J root server 192.58.128.30
+	//  print trace from root down
+	//  (root). -> org -> wikimedia.org -> wikipedia.org
+	if !trace {
+		q := prepareQuery(url, rtype)
+		DNSQuery(q, server)
+	} else {
+		server = [4]byte{192, 112, 36, 4} // g.root-servers.net. A
+
+		// /	trace(url, rtype, server)
+	}
 }
 
-func main() {
+func trace(url string, rtype RType, server [4]byte) {
+	//	get root// make call with . c.root-servers.net.
+	//.    NS with server use the A of the root server to make the next call
+	//org. from a of previous server make ns to .org NS b2.org.afilias-nst.org.
+	// get A of wikimedia.org
+	//wikipedia.org. NS -> wikimedia.org
+
+}
+
+func parseArgs() (string, RType, bool) {
 	if len(os.Args) <= 1 {
 		log.Fatalln("no url or ip specified")
 	}
 
 	var ipAddress = flag.String("x", "", "ip address for reverse lookup")
+	var trace = flag.Bool("trace", false, "flag to show full trace or not")
 	flag.Parse()
 
 	url, rtype := os.Args[1], A
 	if len(os.Args) > 2 {
 		// return error more go like
-		rtype = typeStringToRtype(os.Args[2])
+		rtype = typeStringToRtype(strings.ToUpper(os.Args[2]))
 	}
 
 	if *ipAddress != "" {
@@ -44,23 +67,11 @@ func main() {
 		}
 	}
 
-	DNSQuery(prepareQuery(url, rtype))
-}
-
-func DNSQuery(q DNSMessage) DNSMessage {
-	dnsClient := newDNSClient(googleHost)
-	dnsClient.Connect()
-	defer dnsClient.Close()
-
-	start := time.Now() // bytes received
-	res, n, err := dnsClient.Query(q)
-	if err != nil {
-		log.Fatalf("DNS Query err: %v", err)
+	if rtype != PTR && url[len(url)-1] != '.' {
+		url = url + "."
 	}
 
-	printResponse(res, start, dnsClient.address, n)
-
-	return res
+	return url, rtype, *trace
 }
 
 func prepareQuery(url string, rrtype RType) DNSMessage {
@@ -89,8 +100,10 @@ func prepareQuery(url string, rrtype RType) DNSMessage {
 
 	qname := []byte{}
 	for _, o := range octets {
-		qname = append(qname, uint8(len(o)))
-		qname = append(qname, []byte(o)...)
+		if o != "" {
+			qname = append(qname, uint8(len(o)))
+			qname = append(qname, []byte(o)...)
+		}
 	}
 
 	if rrtype == PTR {
@@ -140,40 +153,20 @@ func prepareQuery(url string, rrtype RType) DNSMessage {
 	}
 }
 
-func readName(p []byte, offset int) (string, int) {
-	labels, i, nextIdx, offsets := []string{}, offset, 0, make(map[int]struct{})
+func DNSQuery(q DNSMessage, addr [4]byte) DNSMessage {
+	dnsClient := newDNSClient(addr)
+	dnsClient.Connect()
+	defer dnsClient.Close()
 
-	for {
-		b := p[i]
-		if b&0xC0 > 0 {
-			if nextIdx == 0 {
-				nextIdx = i + 2
-			}
-			i = int(p[i+1])
-			if _, exists := offsets[i]; exists {
-				break
-			}
-			offsets[i] = struct{}{}
-		} else if b == 0x00 { // at the end
-			if nextIdx == 0 {
-				nextIdx = i + 1
-			}
-			break
-		} else {
-			ll := int(b)
-			labels = append(labels, string(p[i+1:i+1+ll]))
-			i += ll + 1
-		}
+	start := time.Now() // bytes received
+	res, n, err := dnsClient.Query(q)
+	if err != nil {
+		log.Fatalf("DNS Query err: %v", err)
 	}
 
-	return strings.Join(labels, ".") + ".", nextIdx
-}
+	printResponse(res, start, dnsClient.address, n)
 
-func toFlag(b byte) Flag {
-	if b > 0 {
-		return Flag(true)
-	}
-	return Flag(false)
+	return res
 }
 
 func parseResponse(p []byte) (DNSMessage, error) {
@@ -249,67 +242,40 @@ func parseResponse(p []byte) (DNSMessage, error) {
 	return res, nil
 }
 
-func printResponse(res DNSMessage, start time.Time, addr syscall.SockaddrInet4, n int) {
-	fmt.Println(";; Got answer")
-	fmt.Printf(";; --HEADER-- opcode: %d, status: %d, id: %d\n", int(res.Header.OpCode), int(res.Header.RCode), res.Header.ID)
+func toFlag(b byte) Flag {
+	if b > 0 {
+		return Flag(true)
+	}
+	return Flag(false)
+}
 
-	fmt.Printf(";; flags:")
-	if res.Header.QR == QRResponse {
-		fmt.Printf(" qr")
-	}
-	if res.Header.Truncation {
-		fmt.Printf(" tc")
-	}
-	if res.Header.RecursionDesired {
-		fmt.Printf(" rd")
-	}
-	if res.Header.RecursionAvailable {
-		fmt.Printf(" ra")
-	}
-	if res.Header.AuthoritativeAnswer {
-		fmt.Printf(" aa")
-	}
-	fmt.Printf("; ")
+func readName(p []byte, offset int) (string, int) {
+	labels, i, nextIdx, offsets := []string{}, offset, 0, make(map[int]struct{})
 
-	fmt.Printf("QUERY: %d ANSWER: %d AUTHORITY: %d ADDITIONAL: %d\n\n",
-		res.Header.QuestionCount, res.Header.AnswerCount, res.Header.NameServerCount, res.Header.AdditionalRecordCount)
-
-	fmt.Println(";; QUESTION SECTION")
-	for _, q := range res.Questions {
-		fmt.Printf("%6s %13s %6s\n", q.Name, ClassMap[q.Qclass], TypesMap[q.Qtype])
-	}
-
-	for i, a := range res.Answers {
-		if i == 0 {
-			fmt.Println(";; ANSWER")
+	for {
+		b := p[i]
+		if b&0xC0 > 0 {
+			if nextIdx == 0 {
+				nextIdx = i + 2
+			}
+			i = int(p[i+1])
+			if _, exists := offsets[i]; exists {
+				break
+			}
+			offsets[i] = struct{}{}
+		} else if b == 0x00 { // at the end
+			if nextIdx == 0 {
+				nextIdx = i + 1
+			}
+			break
+		} else {
+			ll := int(b)
+			labels = append(labels, string(p[i+1:i+1+ll]))
+			i += ll + 1
 		}
-		printRR(a)
 	}
 
-	for i, a := range res.Authorities {
-		if i == 0 {
-			fmt.Println("\n;; AUTHORITY")
-		}
-		printRR(a)
-	}
-
-	for i, a := range res.Authorities {
-		if i == 0 {
-			fmt.Println("\n;; ADDITIONAL")
-		}
-		printRR(a)
-	}
-
-	t := time.Now()
-	elapsed := t.Sub(start)
-	serverIP := netip.AddrFrom4(addr.Addr).String()
-
-	fmt.Println()
-	fmt.Printf(";; Query Time: %d msec\n", elapsed.Milliseconds())
-	fmt.Printf(";; SERVER %s#%d(%s)\n", serverIP, addr.Port, serverIP)
-	fmt.Printf(";; WHEN: %s\n", start.Local().Format("Mon Jan 2 15:04:05 MST 2006"))
-	fmt.Printf(";; MSG SIZE    rcvd: %d\n", n)
-
+	return strings.Join(labels, ".") + ".", nextIdx
 }
 
 func getRR(p []byte, i int) (ResourceRecord, int) {
@@ -339,11 +305,6 @@ func getRR(p []byte, i int) (ResourceRecord, int) {
 	}
 
 	return rr, i
-}
-
-func printRR(rr ResourceRecord) {
-	fmt.Printf("%6s %6d %6s %6s    %s\n",
-		rr.Name, rr.TTL, ClassMap[rr.Class], TypesMap[rr.Type], rr.RData)
 }
 
 func formatRData(p []byte, dl int, recordType RType, i int) (string, int) {
@@ -403,6 +364,74 @@ func formatRData(p []byte, dl int, recordType RType, i int) (string, int) {
 	}
 
 	return rdata, i
+}
+
+func printResponse(res DNSMessage, start time.Time, addr syscall.SockaddrInet4, n int) {
+	fmt.Println(";; Got answer")
+	fmt.Printf(";; ->>HEADER<<- opcode: %s, status: %s, id: %d\n", opcodeMap[res.Header.OpCode], rcodeMap[res.Header.RCode], res.Header.ID)
+
+	fmt.Printf(";; flags:")
+	if res.Header.QR == QRResponse {
+		fmt.Printf(" qr")
+	}
+	if res.Header.Truncation {
+		fmt.Printf(" tc")
+	}
+	if res.Header.RecursionDesired {
+		fmt.Printf(" rd")
+	}
+	if res.Header.RecursionAvailable {
+		fmt.Printf(" ra")
+	}
+	if res.Header.AuthoritativeAnswer {
+		fmt.Printf(" aa")
+	}
+	fmt.Printf("; ")
+
+	fmt.Printf("QUERY: %d ANSWER: %d AUTHORITY: %d ADDITIONAL: %d\n\n",
+		res.Header.QuestionCount, res.Header.AnswerCount, res.Header.NameServerCount, res.Header.AdditionalRecordCount)
+
+	fmt.Println(";; QUESTION SECTION")
+	for _, q := range res.Questions {
+		fmt.Printf("%6s %11s %6s\n", q.Name, ClassMap[q.Qclass], TypesMap[q.Qtype])
+	}
+
+	for i, a := range res.Answers {
+		if i == 0 {
+			fmt.Println(";; ANSWER")
+		}
+		printRR(a)
+	}
+
+	for i, a := range res.Authorities {
+		if i == 0 {
+			fmt.Println("\n;; AUTHORITY")
+		}
+		printRR(a)
+	}
+
+	for i, a := range res.Authorities {
+		if i == 0 {
+			fmt.Println("\n;; ADDITIONAL")
+		}
+		printRR(a)
+	}
+
+	t := time.Now()
+	elapsed := t.Sub(start)
+	serverIP := netip.AddrFrom4(addr.Addr).String()
+
+	fmt.Println()
+	fmt.Printf(";; Query Time: %d msec\n", elapsed.Milliseconds())
+	fmt.Printf(";; SERVER %s#%d(%s)\n", serverIP, addr.Port, serverIP)
+	fmt.Printf(";; WHEN: %s\n", start.Local().Format("Mon Jan 2 15:04:05 MST 2006"))
+	fmt.Printf(";; MSG SIZE    rcvd: %d\n", n)
+
+}
+
+func printRR(rr ResourceRecord) {
+	fmt.Printf("%6s %6d %6s %6s    %s\n",
+		rr.Name, rr.TTL, ClassMap[rr.Class], TypesMap[rr.Type], rr.RData)
 }
 
 func getResourceType(i RType) string {

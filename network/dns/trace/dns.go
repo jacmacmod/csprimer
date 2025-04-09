@@ -54,6 +54,11 @@ type ResourceRecord struct {
 	RData      string
 }
 
+type qtypeAndClass struct {
+	Qtype  uint16
+	Qclass uint16
+}
+
 const (
 	dnsPort    = 53
 	bufferSize = 4096
