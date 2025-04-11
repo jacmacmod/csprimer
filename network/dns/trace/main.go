@@ -17,45 +17,20 @@ import (
 )
 
 func main() {
-	url, rtype, trace := parseArgs()
 	server := googleHost
-	// server = [4]byte{192, 112, 36, 4}
-	server = [4]byte{192, 58, 128, 30}
-	// J root server 192.58.128.30
-	//  print trace from root down
-	//  (root). -> org -> wikimedia.org -> wikipedia.org
-	if !trace {
-		q := prepareQuery(url, rtype)
-		DNSQuery(q, server)
-	} else {
-		server = [4]byte{192, 112, 36, 4} // g.root-servers.net. A
+	var trace = flag.Bool("trace", false, "flag to show full trace or not")
+	var ipAddress = flag.String("x", "", "ip address for reverse lookup")
 
-		// /	trace(url, rtype, server)
-	}
-}
-
-func trace(url string, rtype RType, server [4]byte) {
-	//	get root// make call with . c.root-servers.net.
-	//.    NS with server use the A of the root server to make the next call
-	//org. from a of previous server make ns to .org NS b2.org.afilias-nst.org.
-	// get A of wikimedia.org
-	//wikipedia.org. NS -> wikimedia.org
-
-}
-
-func parseArgs() (string, RType, bool) {
-	if len(os.Args) <= 1 {
+	flag.Parse()
+	args := flag.Args()
+	if len(args) == 0 {
 		log.Fatalln("no url or ip specified")
 	}
 
-	var ipAddress = flag.String("x", "", "ip address for reverse lookup")
-	var trace = flag.Bool("trace", false, "flag to show full trace or not")
-	flag.Parse()
-
-	url, rtype := os.Args[1], A
-	if len(os.Args) > 2 {
+	url, rtype := args[0], A
+	if len(args) > 1 {
 		// return error more go like
-		rtype = typeStringToRtype(strings.ToUpper(os.Args[2]))
+		rtype = typeStringToRtype(strings.ToUpper(args[1]))
 	}
 
 	if *ipAddress != "" {
@@ -71,7 +46,42 @@ func parseArgs() (string, RType, bool) {
 		url = url + "."
 	}
 
-	return url, rtype, *trace
+	server = [4]byte{198, 97, 190, 53} // root server hs
+
+	if !*trace {
+		q := prepareQuery(url, rtype)
+		DNSQuery(q, server)
+	} else {
+		Trace(url, rtype, server)
+	}
+}
+
+// do a full trace with glue records
+func Trace(url string, rtype RType, server [4]byte) {
+	hostNameLabels := strings.Split(url, ".")
+	curIdx := len(hostNameLabels) - 1
+	hostname := hostNameLabels[curIdx]
+	var res DNSMessage
+
+	for hostname != url {
+		q := prepareQuery(hostname, NS)
+		res = DNSQuery(q, server)
+		rr := res.Additional[0].RData
+
+		ip, err := netip.ParseAddr(rr)
+		if err != nil {
+			log.Fatalln("unable to parse ip address")
+		}
+		if hostname+"." == url {
+			q = prepareQuery(rr, A)
+			res = DNSQuery(q, server)
+			break
+		}
+
+		server = ip.As4()
+		curIdx -= 1
+		hostname = strings.Join(hostNameLabels[curIdx:len(hostNameLabels)-1], ".")
+	}
 }
 
 func prepareQuery(url string, rrtype RType) DNSMessage {
@@ -158,7 +168,7 @@ func DNSQuery(q DNSMessage, addr [4]byte) DNSMessage {
 	dnsClient.Connect()
 	defer dnsClient.Close()
 
-	start := time.Now() // bytes received
+	start := time.Now()
 	res, n, err := dnsClient.Query(q)
 	if err != nil {
 		log.Fatalf("DNS Query err: %v", err)
@@ -410,7 +420,7 @@ func printResponse(res DNSMessage, start time.Time, addr syscall.SockaddrInet4, 
 		printRR(a)
 	}
 
-	for i, a := range res.Authorities {
+	for i, a := range res.Additional {
 		if i == 0 {
 			fmt.Println("\n;; ADDITIONAL")
 		}
