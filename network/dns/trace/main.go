@@ -11,7 +11,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -46,42 +45,37 @@ func main() {
 		url = url + "."
 	}
 
-	server = [4]byte{198, 97, 190, 53} // root server hs
-
 	if !*trace {
-		q := prepareQuery(url, rtype)
-		DNSQuery(q, server)
+		DNSQuery(url, rtype, server, "google.com")
 	} else {
-		Trace(url, rtype, server)
+
+		Trace(url, rtype, [4]byte{198, 97, 190, 53}, "h.root-servers.net.")
 	}
 }
 
 // do a full trace with glue records
-func Trace(url string, rtype RType, server [4]byte) {
-	hostNameLabels := strings.Split(url, ".")
-	curIdx := len(hostNameLabels) - 1
-	hostname := hostNameLabels[curIdx]
-	var res DNSMessage
-
-	for hostname != url {
-		q := prepareQuery(hostname, NS)
-		res = DNSQuery(q, server)
-		rr := res.Additional[0].RData
-
-		ip, err := netip.ParseAddr(rr)
-		if err != nil {
-			log.Fatalln("unable to parse ip address")
-		}
-		if hostname+"." == url {
-			q = prepareQuery(rr, A)
-			res = DNSQuery(q, server)
-			break
-		}
-
-		server = ip.As4()
-		curIdx -= 1
-		hostname = strings.Join(hostNameLabels[curIdx:len(hostNameLabels)-1], ".")
+func Trace(hostname string, rtype RType, hostIP [4]byte, domain string) DNSMessage {
+	res := DNSQuery(hostname, rtype, hostIP, domain)
+	if len(res.Answers) > 0 || len(res.Authorities) == 0 {
+		return res
 	}
+
+	auth := res.Authorities[0]
+
+	for _, a := range res.Additional {
+		if auth.RData == a.Name && a.Type == A {
+			ip := netip.MustParseAddr(a.RData)
+			return Trace(hostname, rtype, ip.As4(), a.Name)
+		}
+	}
+
+	res = Trace(auth.RData[:len(auth.RData)-1], A, hostIP, domain)
+	if len(res.Answers) == 0 {
+		return res
+	}
+
+	ip := netip.MustParseAddr(res.Answers[0].RData)
+	return Trace(hostname, rtype, ip.As4(), res.Answers[0].Name)
 }
 
 func prepareQuery(url string, rrtype RType) DNSMessage {
@@ -163,18 +157,17 @@ func prepareQuery(url string, rrtype RType) DNSMessage {
 	}
 }
 
-func DNSQuery(q DNSMessage, addr [4]byte) DNSMessage {
-	dnsClient := newDNSClient(addr)
+func DNSQuery(url string, rtype RType, addr [4]byte, domain string) DNSMessage {
+	dnsClient := newDNSClient(addr, domain)
 	dnsClient.Connect()
 	defer dnsClient.Close()
-
-	start := time.Now()
+	q := prepareQuery(url, rtype)
 	res, n, err := dnsClient.Query(q)
 	if err != nil {
 		log.Fatalf("DNS Query err: %v", err)
 	}
 
-	printResponse(res, start, dnsClient.address, n)
+	res.Print(time.Now(), dnsClient, n)
 
 	return res
 }
@@ -376,51 +369,53 @@ func formatRData(p []byte, dl int, recordType RType, i int) (string, int) {
 	return rdata, i
 }
 
-func printResponse(res DNSMessage, start time.Time, addr syscall.SockaddrInet4, n int) {
-	fmt.Println(";; Got answer")
-	fmt.Printf(";; ->>HEADER<<- opcode: %s, status: %s, id: %d\n", opcodeMap[res.Header.OpCode], rcodeMap[res.Header.RCode], res.Header.ID)
+func (m DNSMessage) Print(start time.Time, dnsClient DNSClient, n int) {
+	if len(m.Answers) > 0 {
+		fmt.Println(";; Got answer")
+	}
+	fmt.Printf(";; ->>HEADER<<- opcode: %s, status: %s, id: %d\n", opcodeMap[m.Header.OpCode], rcodeMap[m.Header.RCode], m.Header.ID)
 
 	fmt.Printf(";; flags:")
-	if res.Header.QR == QRResponse {
+	if m.Header.QR == QRResponse {
 		fmt.Printf(" qr")
 	}
-	if res.Header.Truncation {
+	if m.Header.Truncation {
 		fmt.Printf(" tc")
 	}
-	if res.Header.RecursionDesired {
+	if m.Header.RecursionDesired {
 		fmt.Printf(" rd")
 	}
-	if res.Header.RecursionAvailable {
+	if m.Header.RecursionAvailable {
 		fmt.Printf(" ra")
 	}
-	if res.Header.AuthoritativeAnswer {
+	if m.Header.AuthoritativeAnswer {
 		fmt.Printf(" aa")
 	}
 	fmt.Printf("; ")
 
 	fmt.Printf("QUERY: %d ANSWER: %d AUTHORITY: %d ADDITIONAL: %d\n\n",
-		res.Header.QuestionCount, res.Header.AnswerCount, res.Header.NameServerCount, res.Header.AdditionalRecordCount)
+		m.Header.QuestionCount, m.Header.AnswerCount, m.Header.NameServerCount, m.Header.AdditionalRecordCount)
 
 	fmt.Println(";; QUESTION SECTION")
-	for _, q := range res.Questions {
+	for _, q := range m.Questions {
 		fmt.Printf("%6s %11s %6s\n", q.Name, ClassMap[q.Qclass], TypesMap[q.Qtype])
 	}
 
-	for i, a := range res.Answers {
+	for i, a := range m.Answers {
 		if i == 0 {
 			fmt.Println(";; ANSWER")
 		}
 		printRR(a)
 	}
 
-	for i, a := range res.Authorities {
+	for i, a := range m.Authorities {
 		if i == 0 {
 			fmt.Println("\n;; AUTHORITY")
 		}
 		printRR(a)
 	}
 
-	for i, a := range res.Additional {
+	for i, a := range m.Additional {
 		if i == 0 {
 			fmt.Println("\n;; ADDITIONAL")
 		}
@@ -429,37 +424,18 @@ func printResponse(res DNSMessage, start time.Time, addr syscall.SockaddrInet4, 
 
 	t := time.Now()
 	elapsed := t.Sub(start)
-	serverIP := netip.AddrFrom4(addr.Addr).String()
+	serverIP := netip.AddrFrom4(dnsClient.address.Addr).String()
 
 	fmt.Println()
 	fmt.Printf(";; Query Time: %d msec\n", elapsed.Milliseconds())
-	fmt.Printf(";; SERVER %s#%d(%s)\n", serverIP, addr.Port, serverIP)
+	fmt.Printf(";; SERVER %s#%d(%s)\n", serverIP, dnsClient.address.Port, dnsClient.domain)
 	fmt.Printf(";; WHEN: %s\n", start.Local().Format("Mon Jan 2 15:04:05 MST 2006"))
-	fmt.Printf(";; MSG SIZE    rcvd: %d\n", n)
-
+	fmt.Printf(";; MSG SIZE    rcvd: %d\n\n\n", n)
 }
 
 func printRR(rr ResourceRecord) {
 	fmt.Printf("%6s %6d %6s %6s    %s\n",
 		rr.Name, rr.TTL, ClassMap[rr.Class], TypesMap[rr.Type], rr.RData)
-}
-
-func getResourceType(i RType) string {
-	c := TypesMap[i]
-	if c == "" {
-		fmt.Println("invalid type")
-		os.Exit(1)
-	}
-	return c
-}
-
-func getClass(i RClass) string {
-	c := ClassMap[i]
-	if c == "" || i != IN {
-		fmt.Println("invalid class: ", c, i)
-		os.Exit(1)
-	}
-	return c
 }
 
 func typeStringToRtype(s string) RType {

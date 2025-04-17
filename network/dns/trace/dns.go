@@ -138,18 +138,18 @@ var (
 )
 
 type DNSClient struct {
-	address     syscall.SockaddrInet4
-	fd          int
-	fromAddress syscall.SockaddrInet4
-	data        []byte
+	address syscall.SockaddrInet4
+	fd      int
+	domain  string
 }
 
-func newDNSClient(host [4]byte) DNSClient {
+func newDNSClient(host [4]byte, domain string) DNSClient {
 	return DNSClient{
 		address: syscall.SockaddrInet4{
 			Port: dnsPort,
 			Addr: host,
 		},
+		domain: domain,
 	}
 }
 
