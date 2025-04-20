@@ -189,7 +189,7 @@ func (d *DNSClient) Query(q DNSMessage) (DNSMessage, int, error) {
 		}
 
 		if int(binary.BigEndian.Uint16(p[0:2])) != q.Header.ID {
-			return DNSMessage{}, bytesRead, errors.New("X ID does not match")
+			return DNSMessage{}, bytesRead, errors.New("xid does not match")
 		}
 
 		if n < bufferSize {

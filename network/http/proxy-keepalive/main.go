@@ -52,7 +52,6 @@ func main() {
 }
 
 func handleClientConnection(client int) {
-	
 	for {
 		upstream, _ := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
 		upstreamAddr := syscall.SockaddrInet4{Port: 9000, Addr: [4]byte{127, 0, 0, 1}}
