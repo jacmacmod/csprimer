@@ -6,165 +6,233 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"slices"
 	"time"
 )
 
-var loopback = [4]byte{127, 0, 0, 1}
-
-type header struct {
+type Header struct {
 	Seq uint16
 	Ack uint16
 }
 
-type msg struct {
-	Header header
+type Message struct {
+	Header Header
 	Data   []byte
 }
 
-type state struct {
-	seq uint16
-	ack uint16
+type ReliableDelivery struct {
+	Seq    int
+	Ack    int
+	Port   int
+	Conn   *net.UDPConn
+	Target *net.UDPAddr
 }
 
-func main() {
-	// sender or receiver mode
-	// send ACKS or NACKs
-	// check sum for bad data
-	// sequence number in state
-	// send fin when the whole payload has been delivered
-	// timeouts to handle dropped packets:wq:WQ
+var loopback = [4]byte{127, 0, 0, 1}
 
-	var server = flag.Bool("server", true, "if udp is a server")
+const MaxPayloadSize = 2
+
+func main() {
 	var host = flag.Int("P", 9000, "port number")
 	flag.Parse()
 
-	if *server {
-		runServer(state{}, *host)
-	} else {
-		runClient(state{}, *host)
-	}
-}
-
-func runServer(s state, p int) {
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{Port: p, IP: loopback[:]})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-	fmt.Println("started server on ", conn.LocalAddr().String())
-
-	// conn.SetDeadline(t time.Time)
-	// client connected
-	b := make([]byte, 5)
-	n, addr, err := conn.ReadFromUDP(b)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("client connected: Recieved %d bytes from %s\n", n, addr)
+	isClient := len(os.Args) > 1
+	rd := createReliableDelivery(*host)
+	rd.Init(isClient)
+	defer rd.Conn.Close()
 
 	payload := []byte("hello")
+	if len(os.Args) > 1 {
+		rd.Send(payload)
+	} else {
+		for range slices.Chunk(payload, MaxPayloadSize) {
+			var msg Message
+			for {
+				msg, _ = rd.Receive()
+				// fmt.Printf("%+v %+v", msg, rd)
+				if msg.Header.Ack == uint16(rd.Ack) {
+					break
+				}
 
-	for {
-		if int(s.seq) == len(payload) {
-			break
-		}
-		// sleep 1 second
-		time.Sleep(time.Second)
-		m := createMsg(msg{Header: header{Seq: s.seq, Ack: s.ack}, Data: payload[int(s.seq) : int(s.seq)+1]})
-		n, err = conn.WriteToUDP(m, addr)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf("Sent %d bytes msg: %+v\n", n, m)
+				if msg.Header.Ack < uint16(rd.Ack) && msg.Header.Seq == uint16(rd.Seq) {
+					m := createMessage(rd.Seq, rd.Ack, nil)
+					n, err := rd.Conn.WriteTo(m, rd.Target)
+					if err != nil {
+						log.Fatal(err)
+					}
+					fmt.Printf("sent %d bytes seq=%d ack=%d\n", n, rd.Seq, rd.Ack)
+				}
+			}
 
-		n, addr, err := conn.ReadFromUDP(b)
-		if err != nil {
-			log.Fatal(err)
-		}
-		recievedMsg := readMsg(b)
-		fmt.Printf("Recieved %d bytes from %s %+v\n", n, addr, recievedMsg)
+			rd.Ack += 1
+			rd.Seq = int(msg.Header.Seq)
+			m := createMessage(rd.Seq, rd.Ack, nil)
 
-		s.ack = recievedMsg.Header.Ack
-		s.seq += 1
+			n, err := rd.Conn.WriteTo(m, rd.Target)
+			if err != nil {
+				log.Fatal(err)
+			}
+			fmt.Printf("sent %d bytes seq=%d ack=%d\n", n, rd.Seq, rd.Ack)
+		}
 	}
 }
 
-func runClient(s state, p int) {
-	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{Port: p, IP: loopback[:]})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-	fmt.Println("started client on ", conn.LocalAddr().String())
+func createReliableDelivery(port int) ReliableDelivery {
+	return ReliableDelivery{Seq: 0, Ack: 0, Port: port}
+}
 
-	n, err := conn.Write([]byte("hello"))
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("Sent hello", n, "bytes")
+func (rd *ReliableDelivery) Send(b []byte) {
+	chunks := slices.Chunk(b, MaxPayloadSize)
+	for c := range chunks {
+		var err error
+		for {
+			if rd.Ack == rd.Seq {
+				m := createMessage(rd.Seq, rd.Ack, c)
+				n, err := rd.Conn.Write(m)
+				if err != nil {
+					log.Fatal(err)
+				}
+				fmt.Printf("sent %d bytes seq=%d ack=%d\n", n, rd.Seq, rd.Ack)
+			}
+			// wait for response
+			rd.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			var receivedMsg Message
+			for (receivedMsg.Header.Ack == 0 && receivedMsg.Header.Seq == 0) ||
+				(receivedMsg.Header.Ack != uint16(rd.Ack)+uint16(1) &&
+					receivedMsg.Header.Seq != uint16(rd.Seq)) {
+				fmt.Println("waiting on response")
+				if receivedMsg, err = rd.Receive(); err != nil {
+					break
+				}
+			}
 
-	b := make([]byte, 5)
-	for {
-		n, _, err = conn.ReadFromUDP(b)
-		if err != nil {
-			log.Fatal(err)
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				fmt.Println("No message received in time — timed out")
+			}
+			rd.Conn.SetReadDeadline(time.Time{})
+			if err == nil {
+				break
+			}
 		}
-		msg := readMsg(b)
-		fmt.Printf("Recieved msg %+v: %s\n", msg, msg.Data)
-
-		s.ack = msg.Header.Seq + 1
-		s.seq = msg.Header.Seq
-		msg.Header.Ack = s.ack
-		b = createMsg(msg)
-
-		n, err := conn.Write(b)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf("Sent %d bytes", n)
+		rd.Seq += 1
+		rd.Ack += 1
 	}
 }
 
-func createMsg(msg msg) []byte {
+func (rd *ReliableDelivery) Receive() (Message, error) {
+	p := make([]byte, MaxPayloadSize+4)
+	for {
+		n, addr, err := rd.Conn.ReadFromUDP(p)
+		if err != nil {
+			return Message{}, err
+		}
+		if rd.Target == nil {
+			rd.Target = addr
+		}
+		if !addr.IP.Equal(rd.Target.IP) {
+			continue
+		}
+		msg := readMsg(p, n)
+		fmt.Printf("rcvd %d bytes seq=%d ack=%d msg=%s\n", n, msg.Header.Seq, msg.Header.Ack, string(msg.Data))
+		return msg, nil
+	}
+}
+
+func (rd *ReliableDelivery) Init(isClient bool) {
+	addr := &net.UDPAddr{Port: rd.Port, IP: loopback[:]}
+	if isClient {
+		conn, err := net.DialUDP("udp", nil, addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("connect to ", conn.LocalAddr().String())
+		rd.Conn = conn
+	} else {
+		conn, err := net.ListenUDP("udp", addr)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("listening on ", conn.LocalAddr().String())
+		rd.Conn = conn
+	}
+}
+
+// func runServer(s state, p int) {
+
+// 	payload := []byte("hello")
+// 	// final := []byte{}
+// 	// handle duplicates on server
+// 	for {
+// 		if int(s.seq) == len(payload) {
+// 			break
+// 		}
+// 		// sleep 1 second
+
+// 		msg := Message{
+// 			Header: Header{Seq: s.seq, Ack: s.ack},
+// 			Data:   payload[int(s.seq) : int(s.seq)+1],
+// 		}
+// 		m := createMsg(msg)
+// 		n, err = conn.WriteToUDP(m, addr)
+// 		if err != nil {
+// 			log.Fatal(err)
+// 		}
+// 		fmt.Printf("sent %d bytes seq=%d ack=%d\n", n, msg.Header.Seq, msg.Header.Ack)
+
+// 		var receivedMsg Message
+// 		fmt.Println(receivedMsg, s)
+// 		for receivedMsg.Header.Ack != s.ack+uint16(1) {
+// 			n, _, err := conn.ReadFromUDP(b)
+// 			if err != nil {
+// 				log.Fatal(err)
+// 			}
+// 			receivedMsg = readMsg(b)
+// 			fmt.Printf("rcvd %d bytes seq=%d ack=%d\n", n, msg.Header.Seq, msg.Header.Ack)
+// 		}
+
+// 		s.ack = receivedMsg.Header.Ack
+// 		s.seq += uint16(1)
+// 	}
+// }
+
+// func runClient(s state, p int) {
+// 	b := make([]byte, 5)
+// 	for {
+// 		n, _, err := conn.ReadFromUDP(b)
+// 		if err != nil {
+// 			log.Fatal(err)
+// 		}
+// 		msg := readMsg(b)
+// 		fmt.Printf("rcvd %d bytes seq=%d ack=%d\n", n, msg.Header.Seq, msg.Header.Ack)
+
+// 		s.ack = msg.Header.Seq + uint16(1)
+// 		s.seq = msg.Header.Seq
+// 		msg.Header.Ack = s.ack
+// 		msg.Data = nil
+
+// 		b = createMsg(msg)
+// 		n, err = conn.Write(b)
+// 		if err != nil {
+// 			log.Fatal(err)
+// 		}
+// 		fmt.Printf("sent %d bytes seq=%d ack=%d\n", n, msg.Header.Seq, msg.Header.Ack)
+// 	}
+// }
+
+func createMessage(seq, ack int, b []byte) []byte {
 	m := make([]byte, 4)
-	binary.BigEndian.PutUint16(m[0:2], msg.Header.Seq)
-	binary.BigEndian.PutUint16(m[2:4], msg.Header.Ack)
-	m = append(m, msg.Data...)
+	binary.BigEndian.PutUint16(m[0:2], uint16(seq))
+	binary.BigEndian.PutUint16(m[2:4], uint16(ack))
+	m = append(m, b...)
 	return m
 }
 
-func readMsg(b []byte) msg {
-	seq := binary.BigEndian.Uint16(b[0:2])
-	ack := binary.BigEndian.Uint16(b[2:4])
-	data := b[4:]
-
-	return msg{Header: header{Seq: seq, Ack: ack}, Data: data}
+func readMsg(b []byte, n int) Message {
+	return Message{
+		Header: Header{
+			Seq: binary.BigEndian.Uint16(b[0:2]),
+			Ack: binary.BigEndian.Uint16(b[2:4]),
+		},
+		Data: b[4:n]}
 }
-
-// for {
-// 	n, from, err := syscall.Recvfrom(fd, b, 0)
-// 	if err != nil {
-// 		log.Fatalf("Error recieving DNS response: %v", err)
-// 	}
-// 	if v, ok := from.(*syscall.SockaddrInet4); !ok {
-// 		log.Fatalf("Error converting sockaddr: %v", err)
-// 	} else {
-// 		log.Printf("Recieved %d bytes from port %d\n", n, v.Port)
-// 	}
-
-// 	if err = syscall.Sendto(fd, []byte{1}, 0, &from); err != nil {
-// 		log.Fatalf("error sending message: %v", err)
-// 	}
-// 	break
-// }
-
-// fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
-// if err != nil {
-// 	log.Fatalf("error creating socket %v\n", err)
-// }
-// defer syscall.Close(fd)
-
-// addr := syscall.SockaddrInet4{Addr: loopback, Port: p}
-// if err := syscall.Bind(fd, &addr); err != nil {
-// 	log.Fatalf("error binding socket %v\n", err)
-// }
