@@ -16,23 +16,20 @@ type AS struct {
 	CIDR    netip.Prefix
 	Name    string
 	Country string
-	BitsLen int
 }
 
 func loadAutonomousSystem() []AS {
-	asnDB := "ip2asn-v4.tsv"
+	asnDB := "ip2asn-v4.tsv" // https://iptoasn.com
 	f, err := os.Open(asnDB)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer f.Close()
-	// asmap := make(map[netip.Prefix][]AS)
-	var asSlice []AS
+
 	r := bufio.NewReader(f)
 	scanner := bufio.NewScanner(r)
-	i := 0
+	var asSlice []AS
 	for scanner.Scan() {
-		i++
 		line := scanner.Text()
 		lineSplit := strings.Split(line, "\t")
 		startIP := netip.MustParseAddr(lineSplit[0])
@@ -63,10 +60,8 @@ func loadAutonomousSystem() []AS {
 			End:     endIP,
 			Country: lineSplit[3],
 			Name:    lineSplit[4],
-			BitsLen: bitsLen,
 			CIDR:    netip.PrefixFrom(startIP, bitsLen),
 		}
-		//	asmap[ID] = append(asmap[ID], as)
 		asSlice = append(asSlice, as)
 	}
 	if err := scanner.Err(); err != nil {
