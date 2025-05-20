@@ -50,7 +50,6 @@ func main() {
 			var msg Message
 			for {
 				msg, _ = rd.Receive()
-				// fmt.Printf("%+v %+v", msg, rd)
 				if msg.Header.Ack == uint16(rd.Ack) {
 					break
 				}
@@ -95,7 +94,7 @@ func (rd *ReliableDelivery) Send(b []byte) {
 				}
 				fmt.Printf("sent %d bytes seq=%d ack=%d\n", n, rd.Seq, rd.Ack)
 			}
-			// wait for response
+
 			rd.Conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 			var receivedMsg Message
 			for (receivedMsg.Header.Ack == 0 && receivedMsg.Header.Seq == 0) ||
