@@ -1,11 +1,13 @@
 package main
 
 import (
+	"encoding/binary"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"net/netip"
+	"sort"
 	"time"
 
 	"golang.org/x/net/icmp"
@@ -106,12 +108,14 @@ func main() {
 						fmt.Print("\n   ")
 					}
 					if *printAS {
-						asID := 0
-						for _, as := range sliceAS {
-							if as.CIDR.Contains(netip.MustParseAddr(peer.String())) && as.ID != 0 {
-								asID = as.ID
-								break
-							}
+						asID, peerIPv4 := 0, netip.MustParseAddr(peer.String())
+						i := sort.Search(len(sliceAS), func(i int) bool {
+							as := sliceAS[i]
+							return binary.BigEndian.Uint32(as.CIDR.Addr().AsSlice()) > binary.BigEndian.Uint32(peerIPv4.AsSlice())
+						})
+
+						if i > 0 && i < len(sliceAS) && sliceAS[i-1].CIDR.Contains(peerIPv4) {
+							asID = sliceAS[i-1].ID
 						}
 						fmt.Printf("[AS%d] ", asID)
 					}

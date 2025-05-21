@@ -2,9 +2,11 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"log"
 	"net/netip"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -16,6 +18,7 @@ type AS struct {
 	CIDR    netip.Prefix
 	Name    string
 	Country string
+	MaskInt int // CIDR IP mask as int for fast lookup
 }
 
 func loadAutonomousSystem() []AS {
@@ -54,18 +57,26 @@ func loadAutonomousSystem() []AS {
 		if err != nil {
 			log.Fatal(err)
 		}
+		CIDR := netip.PrefixFrom(startIP, bitsLen)
+		mask := int(binary.BigEndian.Uint32(CIDR.Addr().AsSlice()))
 		as := AS{
 			ID:      ID,
 			Start:   startIP,
 			End:     endIP,
 			Country: lineSplit[3],
 			Name:    lineSplit[4],
-			CIDR:    netip.PrefixFrom(startIP, bitsLen),
+			CIDR:    CIDR,
+			MaskInt: mask,
 		}
 		asSlice = append(asSlice, as)
 	}
 	if err := scanner.Err(); err != nil {
 		log.Fatal("reading standard input:", err)
 	}
+
+	sort.Slice(asSlice, func(i, j int) bool {
+		return asSlice[i].MaskInt < asSlice[j].MaskInt
+	})
+
 	return asSlice
 }
