@@ -15,8 +15,7 @@ import (
 )
 
 const (
-	maxHopCount    = 64
-	startProbePort = 33435
+	maxHopCount = 64
 )
 
 func main() {
@@ -27,7 +26,7 @@ func main() {
 		log.Fatal("no url provided")
 	}
 
-	host, destPort := args[0], startProbePort
+	host := args[0]
 	var sliceAS []AS
 	if *printAS {
 		sliceAS = loadAutonomousSystem()
@@ -49,14 +48,6 @@ func main() {
 		log.Fatal("no A record found")
 	}
 
-	udpConn, err := net.ListenPacket("udp4", "0.0.0.0:")
-	if err != nil {
-		log.Fatal(err)
-	}
-	pudp := ipv4.NewPacketConn(udpConn)
-	udpAddr := net.UDPAddr{IP: dst.IP, Port: destPort}
-	defer pudp.Close()
-
 	icmpConn, err := net.ListenPacket("ip4:icmp", "0.0.0.0") // ICMP for IPv4
 	if err != nil {
 		log.Fatal("could not connect ICMP ", err)
@@ -69,11 +60,12 @@ func main() {
 	for i := 1; i <= maxHopCount; i++ {
 		fmt.Printf("%-3d", i)
 		for j := range 3 {
-			if err := pudp.SetTTL(i); err != nil {
+			iConn.
+			if err := iConn.SetTTL(i); err != nil {
 				log.Fatal(err)
 			}
 			begin := time.Now()
-			if _, err := pudp.WriteTo(nil, nil, &udpAddr); err != nil {
+			if _, err := iConn.WriteTo(nil, nil, &dst); err != nil {
 				log.Fatal(err)
 			}
 			if err := iConn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
@@ -108,16 +100,7 @@ func main() {
 						fmt.Print("\n   ")
 					}
 					if *printAS {
-						asID, peerIPv4 := 0, netip.MustParseAddr(peer.String())
-						i := sort.Search(len(sliceAS), func(i int) bool {
-							as := sliceAS[i]
-							return binary.BigEndian.Uint32(as.CIDR.Addr().AsSlice()) > binary.BigEndian.Uint32(peerIPv4.AsSlice())
-						})
-
-						if i > 0 && i < len(sliceAS) && sliceAS[i-1].CIDR.Contains(peerIPv4) {
-							asID = sliceAS[i-1].ID
-						}
-						fmt.Printf("[AS%d] ", asID)
+						printAutonomousSystemInfo(sliceAS, peer)
 					}
 					fmt.Printf("%-2s (%s)  %2.3f ms ", host, peer.String(), rttMs)
 				}
@@ -126,10 +109,21 @@ func main() {
 				return
 			}
 			prevPeer = peer
-			destPort += 1
-			udpAddr.Port = destPort
 		}
 		prevPeer = nil
 		fmt.Println()
 	}
+}
+
+func printAutonomousSystemInfo(sliceAS []AS, peer net.Addr) {
+	asID, peerIPv4 := 0, netip.MustParseAddr(peer.String())
+	i := sort.Search(len(sliceAS), func(i int) bool {
+		as := sliceAS[i]
+		return binary.BigEndian.Uint32(as.CIDR.Addr().AsSlice()) > binary.BigEndian.Uint32(peerIPv4.AsSlice())
+	})
+
+	if i > 0 && i < len(sliceAS) && sliceAS[i-1].CIDR.Contains(peerIPv4) {
+		asID = sliceAS[i-1].ID
+	}
+	fmt.Printf("[AS%d] ", asID)
 }
