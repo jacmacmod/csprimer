@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"os"
 	"sort"
 	"time"
 
@@ -48,34 +49,48 @@ func main() {
 		log.Fatal("no A record found")
 	}
 
-	icmpConn, err := net.ListenPacket("ip4:icmp", "0.0.0.0") // ICMP for IPv4
+	c, err := net.ListenPacket("ip4:icmp", "0.0.0.0") // ICMP for IPv4
 	if err != nil {
 		log.Fatal("could not connect ICMP ", err)
 	}
-	iConn := ipv4.NewPacketConn(icmpConn)
-	defer iConn.Close()
+	defer c.Close()
+	p := ipv4.NewPacketConn(c)
+
+	wm := icmp.Message{
+		Type: ipv4.ICMPTypeEcho,
+		Code: 0,
+		Body: &icmp.Echo{
+			ID:   os.Getpid() & 0xffff,
+			Data: []byte("HELLO-R-U-THERE"),
+		},
+	}
 
 	rb := make([]byte, 1500)
 	var prevPeer net.Addr
 	for i := 1; i <= maxHopCount; i++ {
 		fmt.Printf("%-3d", i)
-		for j := range 3 {
-			iConn.
-			if err := iConn.SetTTL(i); err != nil {
+		j := 0
+		for {
+			wm.Body.(*icmp.Echo).Seq = i
+			wb, err := wm.Marshal(nil)
+			if err != nil {
+				log.Fatal(err)
+			}
+			if err := p.SetTTL(i); err != nil {
 				log.Fatal(err)
 			}
 			begin := time.Now()
-			if _, err := iConn.WriteTo(nil, nil, &dst); err != nil {
+			if _, err := p.WriteTo(wb, nil, &dst); err != nil {
 				log.Fatal(err)
 			}
-			if err := iConn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			if err := p.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 				log.Fatal(err)
 			}
-			n, _, peer, err := iConn.ReadFrom(rb)
+			n, _, peer, err := p.ReadFrom(rb)
 			if err != nil {
 				if err, ok := err.(net.Error); ok && err.Timeout() {
 					fmt.Printf("* ")
-					continue
+					break
 				}
 				log.Fatal(err)
 			}
@@ -92,7 +107,9 @@ func main() {
 			}
 
 			if rm.Type == ipv4.ICMPTypeTimeExceeded ||
+				rm.Type == ipv4.ICMPTypeEchoReply ||
 				rm.Type == ipv4.ICMPTypeDestinationUnreachable {
+
 				if prevPeer != nil && prevPeer.String() == peer.String() {
 					fmt.Printf(" %-2.3f ms", rttMs)
 				} else {
@@ -104,11 +121,14 @@ func main() {
 					}
 					fmt.Printf("%-2s (%s)  %2.3f ms ", host, peer.String(), rttMs)
 				}
+
+				if rm.Type == ipv4.ICMPTypeEchoReply {
+					return
+				}
 			}
-			if rm.Type == ipv4.ICMPTypeDestinationUnreachable {
-				return
-			}
+
 			prevPeer = peer
+			j++
 		}
 		prevPeer = nil
 		fmt.Println()
