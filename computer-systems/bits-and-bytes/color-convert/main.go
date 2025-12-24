@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
+       	"strconv"
 	"strings"
 )
 
@@ -14,7 +14,7 @@ var corpus string = "0123456789abcdef"
 
 func main() {
 	// Zip hex map
-	for i, c := range corpus {
+      	for i, c := range corpus {
 		hexMap[string(c)] = i
 	}
 

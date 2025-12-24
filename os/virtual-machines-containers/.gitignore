@@ -1,0 +1,4 @@
+chroot/myroot
+chroot/.fuse*
+chroot/runc
+run
